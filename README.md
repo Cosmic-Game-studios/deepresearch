@@ -71,15 +71,15 @@ python benchmark_level3.py
 
 ```
   L1: Param tuning only       mean= 79.7    (stuck — can't improve architecture)
-  L3: Add features (informed)  mean=-70.9    (+189% — rewrites the system)
+  L3: Add features (informed)  mean=-71.2    (+189% — rewrites the system)
 ```
 
 | Experiments | L1 (tune) | L3 (add features) | L3 vs L1 |
 |---|---|---|---|
-| 50 | 80.5 | -55.2 | **+169%** |
-| 100 | 79.9 | -60.6 | **+176%** |
-| 200 | 79.7 | -70.9 | **+189%** |
-| 500 | 79.5 | -79.4 | **+200%** |
+| 50 | 80.5 | -55.3 | **+169%** |
+| 100 | 79.9 | -61.7 | **+177%** |
+| 200 | 79.7 | -71.4 | **+190%** |
+| 500 | 79.5 | -79.5 | **+200%** |
 
 ## How It Works
 
