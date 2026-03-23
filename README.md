@@ -1,8 +1,10 @@
 # DeepResearch 🔬
 
-**Autonomous experiment loops that beat greedy search. Proven.**
+**Autonomous experiment loops that beat greedy search. Proven. Building toward Level 3.**
 
-> _Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch). Same core loop. Smarter strategy. Better results._
+> _Inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch). Same core loop. Smarter strategy. Better results. Bigger ambition._
+>
+> _Today: an optimizer that thinks before it acts (+14% over blind search). Tomorrow: an autonomous research engineer that builds software from specifications. We're building the scaffolding — and waiting for the models to meet us there._
 
 ![DeepResearch vs Autoresearch convergence](progress.png)
 
@@ -172,9 +174,66 @@ See `reasoning_layer.md` for the full protocol.
 - Session 2 starts smarter than session 1 ended
 - Never repeats known-bad approaches
 
+## The Vision — Where This Is Going
+
+DeepResearch today optimizes existing code by tuning parameters and making informed changes. That's **Level 1**. The long-term goal of this research project is **Level 3**: a system that can autonomously build complex software from a specification — reading domain literature, designing an architecture, implementing it incrementally, and optimizing the result.
+
+We're honest: Level 3 won't happen without a sufficiently capable foundation model. No amount of scaffolding makes a mediocre model into an autonomous engineer. But we believe the right scaffolding will be ready *when* the models are — and that the scaffolding itself is a hard research problem worth solving now.
+
+```
+Level 1   ███████████████████░  Parameter tuning         ← WE ARE HERE (v3)
+Level 1.5 █████████████░░░░░░░  Informed mutations       ← Reasoning Layer (partial)
+Level 2   █████░░░░░░░░░░░░░░░  Generative mutations     ← NEXT (v4)
+Level 2.5 ██░░░░░░░░░░░░░░░░░░  Curriculum learning      ← v5
+Level 3   ░░░░░░░░░░░░░░░░░░░░  Autonomous engineer      ← v6 (long-term)
+```
+
+### What each level means
+
+**Level 1 — Parameter tuning** (now): Change numbers. Learning rate 3e-4 → 1e-3, depth 8 → 12. The agent turns knobs on existing code. This is what autoresearch does. DeepResearch does it +14% better with the Reasoning Layer.
+
+**Level 1.5 — Smart mutations** (now, partial): The agent reads the code, understands the bottleneck, and makes informed changes. Not random — theory-driven. Our Reasoning Layer (R1/R2/R3) enables this. What's missing: reading external documentation and papers to acquire domain knowledge before experimenting.
+
+**Level 2 — Generative mutations** (next target): The agent **writes new code**, not just changes values. "Add a caching layer." "Replace the linear search with a hash map." "Implement connection pooling." This is the jump from optimizer to engineer. It requires: structural mutations, a feature library per domain, multi-file awareness, and test safety rails. The models can already do this (Opus 4.6: 80.8% SWE-bench) — we need to build the scaffolding that directs this capability into a systematic research loop.
+
+**Level 2.5 — Curriculum learning** (future): Instead of one flat metric, a sequence of progressively harder goals. Each stage builds on the previous. The agent can't skip to the hard problem — it must first build the fundamentals that make advanced techniques possible.
+
+**Level 3 — Autonomous engineer** (long-term): Given only a specification, the agent researches the domain, designs an architecture, implements it from scratch, tests incrementally, and optimizes using everything from Levels 1–2.5. This is where a sufficiently advanced model + the right scaffolding could produce systems that compete with expert-built software in narrow domains.
+
+### What we're building vs what we're waiting for
+
+| We build the scaffolding | We wait for the model |
+|---|---|
+| Experiment loop + Reasoning Layer | Stronger long-horizon planning |
+| Feature libraries per domain | Better code generation reliability |
+| Curriculum definitions | Larger context for full codebases |
+| Safety rails + test constraints | Self-correction without human review |
+| Cross-session persistent knowledge | True domain knowledge acquisition |
+| Multi-file mutation orchestration | Architectural reasoning at scale |
+
+The scaffolding is the hard, unglamorous work: defining how experiments are structured, how knowledge persists, how safety is maintained, how curricula are defined. When a model arrives that can reliably write 500 lines of correct code in one shot, it will need exactly this scaffolding to know *what* to write, *why* to write it, and *how* to test it.
+
+Our bet: the scaffolding and the models will meet in the middle. We push from below (better experiment structure, deeper reasoning protocols, smarter search). The model providers push from above (stronger coding, longer context, better planning). Level 3 lives at the intersection.
+
+### Honest limits
+
+Even at Level 3, there are things this approach cannot do:
+
+- **Problems that require massive training data** (e.g., Stockfish's NNUE needs billions of chess positions — that's a data/compute problem, not a code optimization problem)
+- **Problems that require hardware-level optimization** (e.g., custom CUDA kernels that exploit specific GPU architecture)
+- **Problems where the evaluation itself is the hard part** (e.g., "is this UI beautiful?" has no good automated metric)
+
+DeepResearch will be strongest in domains where: the evaluation is automatable, the search space is large but structured, domain knowledge exists in written form, and incremental improvement is meaningful. That covers a surprisingly large fraction of real-world software engineering.
+
 ## Contributing
 
 The benchmark is the source of truth. Any improvement must show up in `python compare.py`. PRs welcome.
+
+Areas where contributions would have the most impact:
+- **Level 2 scaffolding**: structural mutation types, feature libraries for new domains, multi-file safety rails
+- **Real-world validation**: run DeepResearch on a real project and report results
+- **Benchmark expansion**: new test landscapes, especially ones that test generative mutations
+- **Domain configurations**: if you're an expert in a domain, contribute a feature library
 
 ## License
 
