@@ -110,21 +110,37 @@ echo "metric: $METRIC"
 **Template B — LLM-as-judge (prompt engineering, document quality):**
 ```bash
 #!/bin/bash
-# .deepresearch/eval.sh — score an artifact using Claude as judge
+# .deepresearch/eval.sh — score an artifact using Claude as judge with rubric
 set -e
-ARTIFACT="$1"
+ARTIFACT="${1:?Usage: eval.sh <artifact_path>}"
 CONTENT=$(cat "$ARTIFACT")
+
+# IMPORTANT: Define your rubric ONCE and never change it during the loop.
+# Each criterion is binary (0 or 1). Total = sum / N * 10.
+JUDGE_PROMPT="Score this artifact on these criteria (0=fail, 1=pass each).
+Respond ONLY with JSON: {\"c1\":0or1, \"c2\":0or1, ..., \"total\":N}
+
+CRITERIA:
+1. CLEAR: Instructions are unambiguous and directly actionable
+2. COMPLETE: All necessary steps are covered, no gaps
+3. CORRECT: No factual errors or logical contradictions
+4. CONCISE: No redundancy, every sentence earns its place
+5. ACTIONABLE: Contains copy-paste-ready commands or code
+
+ARTIFACT:
+$CONTENT"
+
 RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
   -H "Content-Type: application/json" \
   -H "x-api-key: $ANTHROPIC_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
-  -d "$(jq -n --arg c "$CONTENT" '{
+  -d "$(jq -n --arg p "$JUDGE_PROMPT" '{
     model: "claude-sonnet-4-20250514",
     max_tokens: 200,
-    messages: [{role: "user", content: ("Score this 0-10 on quality. Respond with ONLY a JSON: {\"score\": N, \"reason\": \"...\"}\n\n" + $c)}]
+    messages: [{role: "user", content: $p}]
   }')")
-SCORE=$(echo "$RESPONSE" | jq -r '.content[0].text' | jq -r '.score')
-echo "metric: $SCORE"
+TOTAL=$(echo "$RESPONSE" | jq -r '.content[0].text' | jq -r '.total')
+echo "metric: $TOTAL"
 ```
 
 **Template C — Test suite (code optimization):**
@@ -144,20 +160,53 @@ echo "metric: $MS"
 echo "tests_passed: $PASSED"
 ```
 
+**Template D — Composite metric (game balancing, multi-objective):**
+```bash
+#!/bin/bash
+# .deepresearch/eval.sh — combine multiple sub-metrics into one score
+set -e
+# Run your simulation / test / benchmark
+python simulate.py --config balance.json > /tmp/sim-results.json
+
+# Extract sub-metrics and compute weighted composite
+python3 -c "
+import json
+r = json.load(open('/tmp/sim-results.json'))
+# Define weights (MUST be fixed — never change during the loop)
+W_FAIRNESS = 0.4   # win rate variance (lower is better, so invert)
+W_ENGAGEMENT = 0.3  # average session length (higher is better)
+W_BALANCE = 0.3     # unit diversity in top strategies (higher is better)
+
+# Normalize each to 0-1 range using known bounds
+fairness = 1.0 - min(r['win_rate_variance'] / 0.25, 1.0)  # 0.25 = worst case
+engagement = min(r['avg_session_minutes'] / 60.0, 1.0)      # 60 min = perfect
+balance = min(r['unit_diversity_index'] / 1.0, 1.0)          # 1.0 = perfect
+
+composite = (W_FAIRNESS * fairness + W_ENGAGEMENT * engagement + W_BALANCE * balance) * 10
+print(f'metric: {composite:.2f}')
+print(f'sub_fairness: {fairness:.3f}')
+print(f'sub_engagement: {engagement:.3f}')
+print(f'sub_balance: {balance:.3f}')
+"
+```
+
 **Budget per experiment:** Fixed time or resource budget. Every experiment gets
 exactly the same budget so results are comparable. Default: 5 minutes.
 
-**Population size K:** How many parallel branches to maintain. Default: 3.
-Higher K = broader search but more overhead. For single-GPU ML: K=1 (sequential).
-For code/prompt optimization: K=3-5 works well.
+**Population size K:** How many parallel branches to maintain.
 
-**Temperature schedule:** Controls exploration vs exploitation.
-- `"aggressive"` — Start hot (T=1.0), cool slowly. Accept worse results early.
-  Good when the search space is large and the baseline is far from optimal.
-- `"moderate"` — Start warm (T=0.5), cool to 0.1 over 30 experiments.
-  Good default for most problems.
-- `"conservative"` — Start cool (T=0.2), only slight exploration.
-  Good when the baseline is already well-optimized.
+| Scenario | K | Why |
+|---|---|---|
+| Single GPU ML training | 1 | Can't parallelize, branches are overhead |
+| Fast eval (<30s), single machine | 3 | Sweet spot: exploit + explore + wildcard |
+| Fast eval + many mutation categories | 5 | More categories need more parallel search |
+| Multi-GPU (4+ GPUs) | = GPU count | One branch per GPU, all run simultaneously |
+| Very simple problem (few knobs) | 1 | No need for population diversity |
+| Huge search space (10+ categories) | 5 | Maximum diversity before coordination overhead dominates |
+
+**Temperature schedule:** Controls exploration vs exploitation. Choose one:
+`"aggressive"` (large search space), `"moderate"` (default), `"conservative"`
+(already well-optimized). See Temperature Schedule in Phase 1 for exact formulas.
 
 **Mutation categories:** Domain-specific list of change types the agent can try.
 See Domain Configurations below. Each category becomes a "bandit arm."
@@ -167,23 +216,25 @@ See Domain Configurations below. Each category becomes a "bandit arm."
 ```bash
 mkdir -p .deepresearch/populations/branch-0 .deepresearch/reports
 
-# Save config
+# Save config — adapt these values to your domain
 cat > .deepresearch/config.json << 'EOF'
 {
-  "target_files": ["train.py"],
-  "metric": "val_bpb",
+  "target_files": ["<YOUR_FILE>"],
+  "metric": "<YOUR_METRIC>",
   "metric_direction": "lower",
   "budget_seconds": 300,
   "population_size": 3,
   "temperature_schedule": "moderate",
-  "mutation_categories": [
-    "architecture", "hyperparameters", "optimizer",
-    "regularization", "data_processing", "scheduling"
-  ],
-  "created": "2026-03-23T12:00:00Z",
+  "mutation_categories": ["<cat1>", "<cat2>", "<cat3>"],
+  "created": "2026-01-01T00:00:00Z",
   "session_count": 0
 }
 EOF
+# Examples by domain:
+#   ML:    target=train.py, metric=val_bpb, direction=lower, cats=[architecture,hyperparameters,optimizer]
+#   Code:  target=app.py, metric=benchmark_ms, direction=lower, cats=[algorithm,memory,parallelism]
+#   Prompt: target=prompt.md, metric=judge_score, direction=higher, cats=[structure,examples,tone]
+#   Game:  target=balance.json, metric=fairness_idx, direction=higher, cats=[economy,combat,progression]
 
 # Initialize strategy state
 cat > .deepresearch/strategy-state.json << 'EOF'
@@ -240,6 +291,30 @@ Before each experiment, the Strategy Engine decides:
 - **HOW aggressively** to mutate (temperature)
 - **WHICH branch** to mutate from (population selection)
 
+Use `python strategy.py select` to get the decision:
+```bash
+$ python strategy.py select
+{"category": "architecture", "branch": "branch-1", "reason": "thompson_sampling (T=0.38)",
+ "temperature": 0.38, "experiment_number": 7, "special_action": null}
+# special_action can be: null, "crossover" (every 10), or "ablation" (every 20)
+```
+
+Use `python strategy.py status` for a dashboard:
+```bash
+$ python strategy.py status
+=== DeepResearch Status ===
+Total experiments: 42
+Temperature: 0.1247
+Baseline: 0.993
+Best: 0.961
+Improvement: +3.22%
+
+--- Bandit Arms ---
+  architecture         | trials= 14 | α=  8 β=  7 | success=50%
+  hyperparameters      | trials= 10 | α=  4 β=  7 | success=30%
+  optimizer            | trials=  8 | α=  2 β=  7 | success=13%
+```
+
 #### Bandit Selection — Thompson Sampling
 
 Each mutation category is a "bandit arm" with a Beta distribution:
@@ -264,6 +339,23 @@ dominates. As temperature cools, the agent focuses on what works.
   "optimizer": {"alpha": 1, "beta": 1, "trials": 0}
 }
 ```
+
+#### Alternative: UCB1 (Upper Confidence Bound)
+
+If you prefer a deterministic selection strategy over Thompson's stochastic
+sampling, use UCB1. It selects the arm maximizing:
+
+```
+UCB1(arm) = (successes / trials) + C × sqrt(ln(total_trials) / trials)
+```
+
+where C controls exploration (default C=1.41, increase for more exploration).
+
+**When to use which:**
+- **Thompson Sampling** (default): Better when categories have very different
+  success rates. Naturally adapts, less tuning needed. Preferred for most cases.
+- **UCB1**: Better when you want deterministic, reproducible arm selection.
+  Easier to debug. Good for benchmark comparisons where randomness is unwanted.
 
 #### Temperature Schedule
 
@@ -318,20 +410,38 @@ Make ONE focused change. Rules:
 - Small and testable. Don't combine unrelated changes.
 - The change must be reversible (git makes this trivial).
 - Stay within the selected mutation category.
-- Scale the magnitude of the change with temperature:
-  High T → bigger, bolder changes. Low T → small refinements.
+- Scale mutation magnitude with temperature using this guide:
+
+```
+T > 0.7  (hot)   → Structural changes. Swap algorithms, rewrite sections,
+                    change architecture.
+                    ML: replace optimizer (SGD→AdamW), change LR schedule
+                    Code: change data structure (list→hashmap), new algorithm
+                    Prompt: rewrite persona, reorganize all sections
+                    Game: redesign resource system, change combat formula
+T 0.3–0.7 (warm) → Parameter changes with moderate range.
+                    ML: learning rate 3e-4→1e-3, depth 8→12
+                    Code: buffer size 4K→16K, thread count 4→8
+                    Prompt: add 2 examples, tighten constraints
+                    Game: damage multiplier 1.0→1.5, XP curve exponent
+T < 0.3  (cold)  → Fine-tuning. Small nudges to known-good values.
+                    ML: learning rate 3e-4→2.5e-4, dropout 0.1→0.05
+                    Code: cache TTL 300→360, batch size 100→120
+                    Prompt: rephrase one sentence, adjust one example
+                    Game: spawn rate 1.0→1.05, gold per kill ±5%
+```
 
 ### 1.4 Execute
 
 Run the evaluation harness with fixed budget. Redirect ALL output.
 
 ```bash
-# Run experiment with timeout
-timeout ${BUDGET}s uv run train.py > .deepresearch/run.log 2>&1
+# Run the eval harness (domain-agnostic — uses eval.sh you created in setup)
+bash .deepresearch/eval.sh > .deepresearch/run.log 2>&1
 EXIT_CODE=$?
 
-# Extract metric
-METRIC=$(grep "^${METRIC_NAME}:" .deepresearch/run.log | tail -1 | awk '{print $2}')
+# Extract metric (eval.sh must print "metric: <value>" as its last meaningful line)
+METRIC=$(grep "^metric:" .deepresearch/run.log | tail -1 | awk '{print $2}')
 ```
 
 If the run crashes (empty metric, non-zero exit):
@@ -344,11 +454,21 @@ If the run crashes (empty metric, non-zero exit):
 
 Compare the new metric to the CURRENT BRANCH BEST (not just the global best):
 
-**Case: Improved** (lower val_bpb, higher accuracy, etc.)
+**Case: Improved** (metric moved in the direction specified by `metric_direction`)
 → Keep the change. Git commit. Update branch best.
 → If this branch now beats the global best, update global best.
 → Update bandit arm: α += 1 (success for this category)
 → Save to knowledge base as a successful pattern
+
+```bash
+# Improvement check (works for both "lower" and "higher" directions)
+DIRECTION=$(jq -r '.metric_direction' .deepresearch/config.json)
+if [ "$DIRECTION" = "lower" ]; then
+  IMPROVED=$(python3 -c "print('yes' if $NEW < $PREV_BEST else 'no')")
+else
+  IMPROVED=$(python3 -c "print('yes' if $NEW > $PREV_BEST else 'no')")
+fi
+```
 
 **Case: Worse, but within annealing threshold**
 → Calculate acceptance probability: P = exp(-|Δ| / T(n))
@@ -390,6 +510,12 @@ Append to `.deepresearch/experiments.jsonl`:
 }
 ```
 
+**Required fields:** `id`, `timestamp`, `category`, `metric`, `status`, `branch`.
+**Optional fields:** `hypothesis`, `mutation_description`, `previous_best`,
+`improvement_pct`, `temperature`, `acceptance_probability`, `duration_seconds`,
+`notes`, `session`.
+**Valid status values:** `"baseline"`, `"kept"`, `"reverted"`, `"crashed"`, `"accepted-worse"`, `"skipped"`.
+
 ### 1.7 Periodic Checkpoints
 
 **Every 5 experiments:** Write a brief status update to the log:
@@ -399,33 +525,101 @@ Append to `.deepresearch/experiments.jsonl`:
 - Population diversity (how different are the branches)
 
 **Every 10 experiments:** Trigger a CROSSOVER attempt:
-- Take the top 2 branches
-- Merge their changes intelligently (not blind file merge — understand what
-  each branch changed and combine compatible changes)
-- Test the crossover as a new experiment
-- If it beats both parents, it becomes the new branch leader
+
+```bash
+# 1. Get diffs of top 2 branches relative to baseline
+git diff branch-0..branch-1 -- ${TARGET_FILES} > /tmp/diff-A.patch
+git diff branch-0..branch-2 -- ${TARGET_FILES} > /tmp/diff-B.patch
+
+# 2. Create crossover branch from baseline
+git checkout -b deepresearch/crossover-${N} branch-0
+
+# 3. Apply branch-A changes first (these are the better branch)
+git apply /tmp/diff-A.patch || git apply --3way /tmp/diff-A.patch
+
+# 4. Attempt to layer branch-B changes on top
+git apply /tmp/diff-B.patch 2>/dev/null
+# If conflicts: skip conflicting hunks, keep branch-A's version
+# Use: git apply --reject /tmp/diff-B.patch && rm -f *.rej
+
+# 5. Test the crossover as a normal experiment
+bash .deepresearch/eval.sh > .deepresearch/run.log 2>&1
+# If metric beats BOTH parents → new branch leader
+# If not → delete crossover branch, revert
+```
 
 **Every 20 experiments:** Perform ABLATION on the best branch:
-- Systematically remove individual changes and re-test
-- Identify which changes actually contribute and which are noise
-- Prune unnecessary changes from the best branch
-- This prevents "change accumulation" where many neutral changes pile up
+
+```bash
+# 1. List all commits on best branch since baseline
+COMMITS=$(git log --oneline branch-0..HEAD | awk '{print $1}')
+
+# 2. For each commit, revert ONLY that commit and re-eval
+for COMMIT in $COMMITS; do
+  git stash
+  git revert --no-commit $COMMIT
+  bash .deepresearch/eval.sh > .deepresearch/run.log 2>&1
+  ABLATED_METRIC=$(grep "^metric:" .deepresearch/run.log | tail -1 | awk '{print $2}')
+  # If removing this commit HURTS the metric → commit is valuable, keep it
+  # If removing this commit has NO EFFECT → commit is noise, mark for pruning
+  git checkout -- .  # restore
+  git stash pop
+done
+
+# 3. Interactive rebase to squash/drop noise commits
+# git rebase -i branch-0  (drop commits marked as noise)
+```
 
 ### 1.8 Population Management
 
 Maintain exactly K branches. When a new variant is born (from crossover or
 a particularly good random exploration), decide which branch to replace:
 
-- Never replace the current global best
-- Replace the worst-performing branch
-- If all branches are within 1% of each other, replace the OLDEST
-  (stale branches are likely stuck in a local optimum)
+```bash
+# Population replacement logic (called after a successful crossover or exploration)
+python3 -c "
+import json
+state = json.load(open('.deepresearch/strategy-state.json'))
+pop = state.get('population', [])
+config = json.load(open('.deepresearch/config.json'))
+direction = config.get('metric_direction', 'lower')
+K = config.get('population_size', 3)
+
+if len(pop) < K:
+    print('SLOT_AVAILABLE: add new branch directly')
+else:
+    # Find global best — never replace it
+    if direction == 'lower':
+        best_idx = min(range(len(pop)), key=lambda i: pop[i]['metric'])
+        worst_idx = max(range(len(pop)), key=lambda i: pop[i]['metric'])
+    else:
+        best_idx = max(range(len(pop)), key=lambda i: pop[i]['metric'])
+        worst_idx = min(range(len(pop)), key=lambda i: pop[i]['metric'])
+
+    # Check if all branches within 1%
+    metrics = [p['metric'] for p in pop]
+    spread = (max(metrics) - min(metrics)) / max(abs(min(metrics)), 1e-9)
+    if spread < 0.01:
+        # All similar — replace oldest
+        oldest_idx = min(range(len(pop)), key=lambda i: pop[i].get('updated', 0))
+        if oldest_idx != best_idx:
+            print(f'REPLACE_OLDEST: branch {pop[oldest_idx][\"branch\"]}')
+        else:
+            print(f'REPLACE_WORST: branch {pop[worst_idx][\"branch\"]}')
+    else:
+        # Replace worst (never the best)
+        if worst_idx != best_idx:
+            print(f'REPLACE_WORST: branch {pop[worst_idx][\"branch\"]}')
+"
+```
 
 ---
 
 ### End-to-End Walkthrough — One Full Experiment
 
-This shows exactly what happens in experiment #7 of an ML training session:
+This shows experiment #7. The commands are domain-agnostic — substitute your
+target file and metric. Examples: `train.py`/`val_bpb` (ML), `app.py`/`response_ms`
+(code), `prompt.md`/`judge_score` (prompt), `balance.json`/`fairness_idx` (game).
 
 ```bash
 # 1. Strategy Engine selects parameters
@@ -434,42 +628,43 @@ python strategy.py select
 
 # 2. Agent reads current best on branch-1 and forms hypothesis
 git checkout deepresearch/branch-1
-cat train.py | head -50  # Read current architecture params
+cat ${TARGET_FILE} | head -50
 cat .deepresearch/experiments.jsonl | tail -5  # Review recent experiments
-# Hypothesis: "DEPTH=8→10 should improve val_bpb — experiments #3 and #5
-# both improved with depth increases. Temperature 0.38 supports moderate boldness."
+# Hypothesis: "Changing X should improve ${METRIC} — experiments #3 and #5
+# both improved with similar changes. T=0.38 supports moderate boldness."
 
-# 3. Mutate: make ONE change
-sed -i 's/DEPTH = 8/DEPTH = 10/' train.py
+# 3. Mutate: make ONE change to the target file
+# (edit depends on domain — sed, patch, direct rewrite, etc.)
 
-# 4. Execute with fixed budget
-bash .deepresearch/eval.sh 300 train.py
-# Output: metric: 0.981
+# 4. Execute eval harness with fixed budget
+bash .deepresearch/eval.sh ${BUDGET} ${TARGET_FILE}
+# Output: metric: <new_value>
 
 # 5. Score + Decide
-PREV_BEST=0.993  # branch-1's current best
-NEW=0.981         # this experiment
-# 0.981 < 0.993 → IMPROVED (lower is better)
+PREV_BEST=<branch_best>
+NEW=<new_value>
+# Compare using metric_direction from config.json
 
 # 6a. IMPROVED → Keep
-git add train.py
-git commit -m "deepresearch #7: architecture — DEPTH 8→10 (val_bpb=0.981)"
+git add ${TARGET_FILE}
+git commit -m "deepresearch #7: ${CATEGORY} — ${DESCRIPTION} (${METRIC}=${NEW})"
 
 # 7. Update strategy state
-python strategy.py update '{"id":7,"category":"architecture","branch":"branch-1","metric":0.981,"previous_best":0.993,"improvement_pct":1.21,"status":"kept","hypothesis":"Increase DEPTH 8→10","mutation_description":"DEPTH=8 to DEPTH=10 in train.py","timestamp":"2026-03-23T03:14:22+01:00"}'
-# Output: [#7 | branch-1 | architecture | T=0.380] 0.981 ✓ kept (+1.21%)
+python strategy.py update '{"id":7,"category":"...","branch":"branch-1","metric":${NEW},"previous_best":${PREV_BEST},"improvement_pct":...,"status":"kept","hypothesis":"...","mutation_description":"...","timestamp":"..."}'
+# Output: [#7 | branch-1 | architecture | T=0.380] <metric> ✓ kept (+X.XX%)
 
 # 8. → Loop back to step 1 for experiment #8
 ```
 
-If the experiment had FAILED (metric 1.002, worse than 0.993):
+If the experiment had FAILED (new metric worse than previous best):
 ```bash
-# Annealing check: P = exp(-|0.993-1.002| / 0.38) = exp(-0.024) = 0.976
-# Roll random: 0.43 < 0.976 → ACCEPT WORSE (simulated annealing escape)
-# OR if roll was 0.99 > 0.976 → REJECT, revert:
+# Annealing check: P = exp(-|delta| / T)
+# Example: P = exp(-|0.993-1.002| / 0.38) = exp(-0.024) = 0.976
+# Roll random [0,1]. If roll < P → ACCEPT WORSE (annealing escape)
+# If roll ≥ P → REJECT, revert:
 git reset --hard HEAD~1
-python strategy.py update '{"id":7,"category":"architecture","branch":"branch-1","metric":1.002,"previous_best":0.993,"improvement_pct":-0.91,"status":"reverted","hypothesis":"Increase DEPTH 8→10","mutation_description":"DEPTH=8 to DEPTH=10","timestamp":"2026-03-23T03:14:22+01:00"}'
-# Output: [#7 | branch-1 | architecture | T=0.380] 1.002 ✗ reverted (-0.91%)
+python strategy.py update '{"id":7,...,"status":"reverted",...}'
+# Output: [#7 | branch-1 | architecture | T=0.380] <metric> ✗ reverted (-X.XX%)
 ```
 
 ---
@@ -481,25 +676,107 @@ python strategy.py update '{"id":7,"category":"architecture","branch":"branch-1"
 Beyond the basic bandit + annealing, use these meta-strategies:
 
 **Momentum tracking:** If the last 3 experiments in a category all improved,
-double down — try a BIGGER change in the same category. The search landscape
-is likely smooth in this direction.
+double down — try a BIGGER change in the same category.
 
-**Plateau detection:** If 5+ consecutive experiments show <0.1% change
-(in either direction), the agent is likely in a flat region:
-- Increase temperature temporarily (reheat)
-- Try a category that hasn't been tried in 10+ experiments
-- Attempt a structural change rather than a parameter tweak
+```bash
+# Check momentum before selecting next experiment
+python3 -c "
+import json
+exps = [json.loads(l) for l in open('.deepresearch/experiments.jsonl') if l.strip()]
+# Group last 3 experiments per category
+from collections import defaultdict
+recent = defaultdict(list)
+for e in exps[-15:]:  # look at last 15
+    recent[e.get('category','?')].append(e.get('status'))
+for cat, statuses in recent.items():
+    last3 = statuses[-3:]
+    if len(last3) == 3 and all(s == 'kept' for s in last3):
+        print(f'MOMENTUM: {cat} — 3 consecutive wins, go bigger')
+    elif len(last3) == 3 and all(s in ('reverted','crashed') for s in last3):
+        print(f'ANTI-MOMENTUM: {cat} — 3 consecutive failures, skip')
+"
+```
 
-**Regression analysis:** After 20+ experiments, look for correlations:
-- Which combinations of categories tend to succeed together?
-- Is there a relationship between change magnitude and improvement?
-- Are there interaction effects (A works only when B is also present)?
+**Plateau detection:** If 5+ consecutive experiments show <0.1% change,
+the agent is likely in a flat region. Trigger a reheat:
+
+```bash
+python3 -c "
+import json
+exps = [json.loads(l) for l in open('.deepresearch/experiments.jsonl') if l.strip()]
+recent = exps[-5:]
+if len(recent) >= 5 and all(abs(e.get('improvement_pct',0)) < 0.1 for e in recent):
+    print('PLATEAU: 5 experiments with <0.1% change — reheat recommended')
+"
+```
+
+Reheat action: set `temperature = min(current_T * 3, 0.8)` in strategy-state.json,
+try a category unused in the last 10 experiments, and attempt a structural change.
+
+**Regression analysis:** After 20+ experiments, analyze the log programmatically:
+
+```bash
+# Run after every 20 experiments
+python3 -c "
+import json, collections
+exps = [json.loads(l) for l in open('.deepresearch/experiments.jsonl') if l.strip()]
+
+# 1. Category success rates
+cats = collections.defaultdict(lambda: {'kept':0,'total':0})
+for e in exps:
+    c = e.get('category','?')
+    cats[c]['total'] += 1
+    if e.get('status') == 'kept': cats[c]['kept'] += 1
+for c, s in sorted(cats.items(), key=lambda x: -x[1]['kept']/max(x[1]['total'],1)):
+    print(f'{c:20s} {s[\"kept\"]}/{s[\"total\"]} = {s[\"kept\"]/max(s[\"total\"],1)*100:.0f}%')
+
+# 2. Sequential success pairs (A kept then B kept = interaction)
+prev = None
+pairs = collections.Counter()
+for e in exps:
+    if e.get('status') == 'kept' and prev:
+        pairs[(prev, e['category'])] += 1
+    prev = e.get('category') if e.get('status') == 'kept' else None
+for (a,b), n in pairs.most_common(5):
+    print(f'Pair: {a} → {b}: {n} co-successes')
+
+# 3. Average improvement by category
+import statistics
+for c in cats:
+    imps = [e['improvement_pct'] for e in exps if e.get('category')==c and e.get('status')=='kept' and 'improvement_pct' in e]
+    if imps: print(f'{c}: avg improvement {statistics.mean(imps):.2f}%')
+"
+```
+
+Use the output to adjust bandit priors and focus the next 10 experiments.
 
 **Guided random restarts:** If stuck for 15+ experiments:
-- Save the current best to the population
-- Reset the working branch to baseline
-- Apply ONLY the top-3 most impactful changes from the log
-- Continue from this cleaner starting point
+
+```bash
+# 1. Save current best to population (it's already there via normal flow)
+
+# 2. Identify top-3 most impactful commits
+TOP3=$(python3 -c "
+import json
+exps = [json.loads(l) for l in open('.deepresearch/experiments.jsonl') if l.strip()]
+kept = [e for e in exps if e.get('status')=='kept' and e.get('improvement_pct',0)>0]
+kept.sort(key=lambda e: e['improvement_pct'], reverse=True)
+for e in kept[:3]: print(e.get('id'))
+")
+
+# 3. Reset to baseline
+git checkout deepresearch/branch-0 -- ${TARGET_FILES}
+
+# 4. Cherry-pick only the top-3 changes
+for ID in $TOP3; do
+  HASH=$(git log --all --oneline --grep="deepresearch #${ID}:" | awk '{print $1}')
+  [ -n "$HASH" ] && git cherry-pick --no-commit "$HASH"
+done
+git commit -m "deepresearch: guided restart with top-3 changes from experiments ${TOP3}"
+
+# 5. Continue the loop from this cleaner starting point
+# Temperature gets a reheat boost: T = min(current_T * 3, 0.8)
+```
 
 ---
 
@@ -520,6 +797,15 @@ is likely smooth in this direction.
       "evidence_count": 7,
       "first_seen": "2026-03-20",
       "last_confirmed": "2026-03-23"
+    },
+    {
+      "domain": "prompt_optimization",
+      "category": "examples",
+      "description": "Adding 3 few-shot examples consistently improves judge score by 1-2 points",
+      "confidence": 0.9,
+      "evidence_count": 5,
+      "first_seen": "2026-03-18",
+      "last_confirmed": "2026-03-23"
     }
   ],
   "anti_patterns": [
@@ -528,6 +814,20 @@ is likely smooth in this direction.
       "category": "optimizer",
       "description": "Pure SGD without momentum always regresses vs Muon+AdamW baseline",
       "confidence": 0.95,
+      "evidence_count": 4
+    },
+    {
+      "domain": "code_optimization",
+      "category": "parallelism",
+      "description": "Adding threads to I/O-bound functions with GIL makes it slower, not faster",
+      "confidence": 0.9,
+      "evidence_count": 3
+    },
+    {
+      "domain": "game_balancing",
+      "category": "economy",
+      "description": "Resource generation rates above 1.5x baseline always cause hyperinflation by turn 50",
+      "confidence": 0.8,
       "evidence_count": 4
     }
   ],
@@ -551,17 +851,42 @@ is likely smooth in this direction.
 
 ### Memory Update Protocol
 
-After each experiment:
-1. If a pattern repeats 3+ times → add/update in `patterns`
-2. If something fails 3+ times → add to `anti_patterns`
-3. At session end → extract `domain_insights` from the experiment log
+After each experiment, run `python strategy.py update <result_json>` which
+handles knowledge updates automatically. The logic:
 
-At session START:
-1. Load knowledge.json
-2. Use patterns to BIAS initial bandit arm priors (start arms with α/β
-   reflecting past success rates, not uniform)
-3. Use anti_patterns to SKIP known-bad approaches
-4. Use domain_insights to form better initial hypotheses
+```python
+# Runs inside strategy.py update — excerpt of the key logic:
+
+# 1. Pattern detection: 3+ successes in a category → record pattern
+cat_successes = [e for e in exps if e['category'] == cat and e['status'] == 'kept']
+if len(cat_successes) >= 3:
+    knowledge['patterns'].append({
+        'category': cat,
+        'description': f'{cat} has {len(cat_successes)} successes',
+        'confidence': len(cat_successes) / len(cat_exps)
+    })
+
+# 2. Anti-pattern: last 3 in category all failed → stop trying
+recent_3 = [e for e in exps if e['category'] == cat][-3:]
+if all(e['status'] in ('reverted','crashed') for e in recent_3):
+    knowledge['anti_patterns'].append({
+        'category': cat,
+        'description': f'{cat} failed 3 consecutive times',
+        'confidence': 0.8
+    })
+
+# 3. At session end: extract top insight
+best_cat = max(arms, key=lambda c: arms[c]['alpha'] / (arms[c]['alpha'] + arms[c]['beta']))
+knowledge['domain_insights'].append({
+    'insight': f'{best_cat} was the most productive category this session',
+    'source_session': session_id
+})
+```
+
+At session START, `strategy.py select` automatically:
+1. Loads knowledge.json and biases bandit arm priors from past success rates
+2. Skips categories with high-confidence anti-patterns
+3. Prints relevant insights for context
 
 ### Cross-Session Continuity
 
@@ -576,52 +901,77 @@ context for forming the first hypothesis of the new session.
 
 ---
 
-## Phase 4 — Multi-Agent (Claude Code Subagents)
+## Phase 4 — Parallel Experiments
 
-When the environment supports parallel execution (e.g., multiple GPUs, or
-code/prompt optimization where eval is fast), spawn parallel agents.
+When eval is fast (<60s), run multiple experiments concurrently using git
+worktrees. This works for code optimization, prompt engineering, and game
+balancing. For GPU-bound ML training, use CUDA_VISIBLE_DEVICES instead.
 
-### Parallel Architecture
+### Method A — Git Worktrees (code, prompts, configs)
 
+```bash
+# 1. Create parallel worktrees from different branches
+K=3  # population size
+for i in $(seq 0 $((K-1))); do
+  git worktree add /tmp/dr-branch-${i} deepresearch/branch-${i} 2>/dev/null || true
+done
+
+# 2. Apply different mutations to each worktree
+# (Agent decides mutation per branch using strategy.py select)
+
+# 3. Run evals in parallel
+for i in $(seq 0 $((K-1))); do
+  (
+    cd /tmp/dr-branch-${i}
+    cp ${PROJECT_ROOT}/.deepresearch/eval.sh .
+    bash eval.sh > /tmp/dr-result-${i}.log 2>&1
+    METRIC=$(grep "^metric:" /tmp/dr-result-${i}.log | tail -1 | awk '{print $2}')
+    echo "{\"branch\":\"branch-${i}\",\"metric\":${METRIC}}" > /tmp/dr-result-${i}.json
+  ) &
+done
+wait  # All experiments finish
+
+# 4. Collect results and update strategy state
+for i in $(seq 0 $((K-1))); do
+  RESULT=$(cat /tmp/dr-result-${i}.json)
+  python strategy.py update "$RESULT"
+done
+
+# 5. Cleanup worktrees when done
+for i in $(seq 0 $((K-1))); do
+  git worktree remove /tmp/dr-branch-${i} --force 2>/dev/null || true
+done
 ```
-Main Agent (Orchestrator)
-├── Agent α — Branch 0 (exploitation: refine current best)
-├── Agent β — Branch 1 (exploration: bold category changes)
-├── Agent γ — Branch 2 (crossover: combine best of α and β)
-└── Agent δ — Branch 3 (random restart: fresh perspective)
+
+### Method B — Multi-GPU (ML training)
+
+```bash
+# Each experiment on a different GPU
+for GPU in 0 1 2 3; do
+  (
+    export CUDA_VISIBLE_DEVICES=$GPU
+    cd /tmp/dr-gpu-${GPU}
+    bash .deepresearch/eval.sh > /tmp/dr-gpu-${GPU}-result.log 2>&1
+  ) &
+done
+wait
 ```
 
-### Orchestration Protocol
+### Method C — Sequential with Population (default fallback)
 
-The main agent:
-1. Assigns each subagent a branch and a role (exploit/explore/crossover/restart)
-2. Waits for all agents to complete one experiment each
-3. Collects results
-4. Updates the global strategy state (bandit arms, temperature, population)
-5. Reassigns branches and roles for the next round
-6. Handles crossover/population management centrally
+If parallel execution isn't available, the agent runs experiments sequentially
+but still maintains K branches and rotates between them using tournament
+selection. The search strategy is identical — just slower. This is the default
+and requires no special setup.
 
-Each subagent:
-1. Receives: branch files, experiment history, knowledge base, assigned category
-2. Runs one experiment following the core loop (mutate, execute, score)
-3. Returns: metric, git diff, hypothesis, result status
+### Speedup Expectations
 
-### When to Parallelize
-
-- **ML training on multiple GPUs**: Each agent trains on a different GPU.
-  Set `CUDA_VISIBLE_DEVICES` per agent.
-- **Code optimization**: Eval is usually fast (<30s). Run 3-5 agents in
-  parallel, each testing a different mutation.
-- **Prompt optimization with LLM-as-judge**: API calls can be parallelized.
-  Run multiple prompt variants through the judge concurrently.
-- **Game balancing**: If simulation is fast, run different parameter
-  combinations in parallel.
-
-### Sequential Fallback
-
-If parallel execution isn't available (single GPU, rate-limited API), the
-orchestrator runs agents sequentially but still maintains the population
-and bandit statistics. The search strategy remains the same — just slower.
+| Parallel workers | Experiments/hour (60s eval) | vs sequential |
+|---|---|---|
+| 1 (sequential) | ~55 | 1× |
+| 3 (worktrees) | ~150 | 2.7× |
+| 5 (worktrees) | ~220 | 4× |
+| 4 GPUs (ML, 5min) | ~48 | 4× |
 
 ---
 
@@ -633,6 +983,47 @@ Generate a report when:
 - A session ends (user interrupt, target reached, or context limit)
 - Every 25 experiments within a session (progress report)
 - A significant breakthrough occurs (>5% improvement in one experiment)
+
+To generate: `python strategy.py report` — this reads experiments.jsonl and
+strategy-state.json and writes the full report to `.deepresearch/reports/`.
+
+Alternatively, the agent can call the report logic directly:
+
+```bash
+python3 -c "
+import json, datetime
+exps = [json.loads(l) for l in open('.deepresearch/experiments.jsonl') if l.strip()]
+state = json.load(open('.deepresearch/strategy-state.json'))
+config = json.load(open('.deepresearch/config.json'))
+
+total = len(exps)
+kept = sum(1 for e in exps if e.get('status')=='kept')
+crashed = sum(1 for e in exps if e.get('status')=='crashed')
+baseline = state.get('baseline_metric', exps[0].get('metric') if exps else 'N/A')
+best = state.get('best_metric', baseline)
+direction = config.get('metric_direction','lower')
+if baseline and best and isinstance(baseline,(int,float)):
+    imp = ((baseline-best)/baseline*100) if direction=='lower' else ((best-baseline)/baseline*100)
+else: imp = 0
+
+# Top improvements
+top = sorted([e for e in exps if e.get('status')=='kept' and e.get('improvement_pct',0)>0],
+             key=lambda e: e['improvement_pct'], reverse=True)[:10]
+
+now = datetime.datetime.now().strftime('%Y%m%d-%H%M')
+report = f'''# DeepResearch Report
+**Date:** {now} | **Experiments:** {total} ({kept} kept, {total-kept-crashed} reverted, {crashed} crashed)
+**Baseline:** {baseline} | **Best:** {best} | **Improvement:** {imp:+.2f}%
+
+## Top Changes
+'''
+for i,e in enumerate(top,1):
+    report += f\"{i}. #{e['id']} ({e.get('category','?')}): {e.get('mutation_description',e.get('hypothesis','?'))} → {e.get('improvement_pct',0):+.2f}%\n\"
+
+open(f'.deepresearch/reports/session-{now}.md','w').write(report)
+print(f'Report saved to .deepresearch/reports/session-{now}.md')
+"
+```
 
 ### Report Template
 
@@ -776,6 +1167,52 @@ Write to `.deepresearch/reports/session-YYYYMMDD-HHMM.md`:
 
 ---
 
+### Quick Start Example — Prompt Optimization
+
+End-to-end setup for optimizing a system prompt using LLM-as-judge:
+
+```bash
+# 1. Init
+bash init.sh --domain prompt
+# Edit config: target_files=["system_prompt.md"], metric=judge_score, direction=higher
+
+# 2. Create eval harness with 5 test cases
+cat > .deepresearch/eval.sh << 'EVAL'
+#!/bin/bash
+set -e
+PROMPT=$(cat system_prompt.md)
+TOTAL=0
+for TEST in "Summarize this article" "Write a haiku" "Explain quantum computing" "Debug this code" "Translate to French"; do
+  SCORE=$(curl -s https://api.anthropic.com/v1/messages \
+    -H "Content-Type: application/json" -H "x-api-key: $ANTHROPIC_API_KEY" \
+    -H "anthropic-version: 2023-06-01" \
+    -d "$(jq -n --arg p "$PROMPT" --arg t "$TEST" '{
+      model:"claude-sonnet-4-20250514", max_tokens:500,
+      system: $p,
+      messages:[{role:"user",content:$t}]
+    }')" | jq -r '.content[0].text' | head -c 2000 | \
+    curl -s https://api.anthropic.com/v1/messages \
+    -H "Content-Type: application/json" -H "x-api-key: $ANTHROPIC_API_KEY" \
+    -H "anthropic-version: 2023-06-01" \
+    -d "$(jq -n --arg r "$(cat)" '{
+      model:"claude-sonnet-4-20250514", max_tokens:50,
+      messages:[{role:"user",content:("Rate 0-10, respond ONLY with the number:\n\n" + $r)}]
+    }')" | jq -r '.content[0].text' | grep -oP '^\d+')
+  TOTAL=$((TOTAL + ${SCORE:-0}))
+done
+echo "metric: $((TOTAL / 5))"
+EVAL
+chmod +x .deepresearch/eval.sh
+
+# 3. Run baseline
+bash .deepresearch/eval.sh  # → metric: 6
+
+# 4. Start the loop
+# Agent: "Read SKILL.md, start deepresearch on system_prompt.md"
+```
+
+---
+
 ## Stopping Conditions
 
 The loop runs until ONE of these:
@@ -789,6 +1226,22 @@ The loop runs until ONE of these:
 4. **Context limit** — approaching context window limits. Write a comprehensive
    handoff report and stop gracefully. The next session can resume.
 5. **Time limit** — if the human specified a max session duration
+
+### Context Window Management
+
+AI agents have finite context. Protect it aggressively:
+
+- **Never read full logs.** Use `grep`, `tail -5`, `head -20` — never `cat`.
+- **Redirect all experiment output** to `.deepresearch/run.log`. Extract only
+  the metric line. Read error details only on crash.
+- **Summarize, don't accumulate.** After every 10 experiments, write a 5-line
+  summary of findings to `.deepresearch/session-notes.md` and stop carrying
+  the raw experiment details in your working memory.
+- **Load selectively.** Don't read the entire `experiments.jsonl` — use
+  `tail -10` for recent history and `python strategy.py status` for stats.
+- **Handoff early.** If you estimate you've used >70% of context, trigger the
+  handoff report NOW rather than risking a mid-experiment cutoff. The report
+  contains everything the next session needs to continue seamlessly.
 
 When stopping for ANY reason:
 1. Generate the full research report
@@ -966,6 +1419,20 @@ DISK_FREE=$(df -BM --output=avail . | tail -1 | tr -d ' M')
 `config.json → target_files`. Any attempt to edit other files is a bug.
 Before each git commit, verify: `git diff --name-only` shows only target files.
 
+**Goodhart's Law detection:** When a metric improves suspiciously fast (>10%
+in one experiment), or the metric improves but the artifact quality clearly
+degrades, the agent may be gaming the eval rather than genuinely improving.
+Signs of metric gaming:
+- LLM-as-judge: artifact gets shorter/simpler but score rises (judge is lenient on short outputs)
+- Code benchmark: function gets faster by returning wrong results
+- Test suite: tests pass by catching exceptions instead of fixing bugs
+
+Mitigation: every 25 experiments, run a **sanity check** — have the agent
+read the current best artifact and confirm it still makes sense. If it
+looks degenerate, pause and flag for human review. The eval harness may need
+refinement (but never change it mid-session — start a new session with a
+better harness).
+
 ---
 
 ## Core Principles
@@ -1018,6 +1485,19 @@ fi
 with note "timeout exceeded." If 3+ consecutive timeouts, the agent should
 reduce model/data size in its next mutation.
 
+### Troubleshooting — Common Failure Modes
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| First 10 experiments all reverted | Baseline is already near-optimal OR mutations too aggressive | Switch to `"conservative"` temperature, try finer-grained categories |
+| Metric oscillates ±0.1% forever | Measurement noise exceeds mutation impact | Increase eval budget (more test cases, longer runs) to reduce variance |
+| Every crossover crashes | Branches diverged structurally (incompatible changes) | Reset one branch to baseline + top-3, reduce divergence |
+| Strategy always picks same category | One arm has high α from early luck, others starved | Manually reheat: set temperature to 0.8 in strategy-state.json |
+| OOM crashes on every bold experiment | Model/buffer too large for hardware | Add a VRAM/memory check in eval.sh, reject before running |
+| Metric is CRASHED but no error in log | Eval script doesn't print "metric:" line | Ensure eval.sh always ends with `echo "metric: $VALUE"` |
+| Experiments run but knowledge.json empty | `strategy.py update` not called after each experiment | Must call `python strategy.py update '<json>'` after EVERY experiment |
+| Resume starts from scratch | `.deepresearch/` was gitignored correctly but worktree was cleaned | Check `.deepresearch/` persists outside git worktrees |
+
 ---
 
 ## Scaling to 100+ Experiments
@@ -1062,49 +1542,10 @@ domains. The meta-loop: the research engine improving its own methodology.
 When the human says "run deepresearch" or similar:
 
 1. Check if `.deepresearch/` exists
-   - YES: Load state, show last session summary, ask "Resume or fresh start?"
+   - YES: Run `bash .deepresearch/validate.sh`, load state, show last report summary, ask "Resume or fresh start?"
    - NO: Run setup phase (0.1 through 0.3)
-2. After setup/resume confirmation, begin the core loop
+2. After confirmation, begin the core loop — **never ask again**
 3. Print a one-line status after each experiment:
-   `[#42 | branch-1 | architecture | T=0.31] val_bpb: 0.987 → 0.981 ✓ kept (+0.6%)`
-4. Never flood context — redirect experiment output to files
-5. Read only what you need from logs (grep, tail, head)
-
-### Git Integration
-
-```bash
-# Create session branch
-git checkout -b deepresearch/session-$(date +%Y%m%d-%H%M)
-
-# On kept experiment
-git add ${TARGET_FILES}
-git commit -m "deepresearch #${ID}: ${CATEGORY} — ${DESCRIPTION} (${METRIC})"
-
-# On reverted experiment
-git reset --hard HEAD
-
-# On crossover
-git checkout -b deepresearch/crossover-${ID}
-# ... apply merged changes ...
-# If better, merge into the winning branch
-```
-
-### Subagent Spawning (for parallel mode)
-
-In Claude Code, use `claude --print` or background processes:
-```bash
-# Spawn parallel experiments (pseudo-code)
-for branch in branch-0 branch-1 branch-2; do
-  (
-    cd /tmp/deepresearch-${branch}
-    git checkout deepresearch/${branch}
-    # Apply mutation
-    # Run eval
-    # Write result to .deepresearch/results-${branch}.json
-  ) &
-done
-wait
-# Orchestrator collects results
-```
-
-Adapt to your actual Claude Code subagent capabilities.
+   `[#42 | branch-1 | architecture | T=0.31] metric: 0.987 → 0.981 ✓ kept (+0.6%)`
+4. Use `grep`, `tail`, `head` — never `cat` on logs
+5. Git integration: see walkthrough in Phase 1, crossover in Phase 1.7, parallel in Phase 4
