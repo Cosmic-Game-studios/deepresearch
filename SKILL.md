@@ -62,9 +62,16 @@ persistent state. This directory is THE brain — it persists across sessions.
 ```
 .deepresearch/
 ├── config.json          # Session config (metric, target, budget, etc.)
-├── knowledge.json       # Cross-session knowledge base
+├── knowledge.json       # Cross-session knowledge base (patterns, anti-patterns)
 ├── dependencies.json    # Causal dependency graph between experiments
 ├── experiments.jsonl     # Append-only experiment log (one JSON per line)
+├── curriculum.json      # Progressive goals (Level 2.5)
+├── orchestrator_state.json  # Level 3 pipeline state
+├── architecture_plan.json   # Level 3 component plan
+├── research/            # External domain knowledge (Level 1.5+)
+│   ├── sources.json     # Reading list: URLs, summaries, insights
+│   ├── techniques.json  # Extracted techniques with evidence + priority
+│   └── domain_knowledge.json  # Structured research findings
 ├── memos/               # Research memos (every 10 experiments)
 │   └── memo-10.md       # Synthesized findings and theories
 ├── populations/          # Top-K branch snapshots
@@ -333,6 +340,51 @@ schedule → model doesn't converge fully in 5 minutes."
 The difference: the good read identifies a SPECIFIC bottleneck with
 evidence from past experiments. The bad read is just scanning.
 
+**R1 Extended: External Knowledge Acquisition**
+
+The Deep Read doesn't stop at the code. A good researcher also reads
+external documentation, articles, and existing solutions BEFORE
+experimenting. Use the knowledge acquisition system:
+
+```python
+from engine.knowledge import KnowledgeAcquisition
+
+ka = KnowledgeAcquisition(domain="web_api", spec="Optimize REST API", language="python")
+
+# 1. Generate targeted search queries
+queries = ka.generate_searches(bottleneck="latency")
+# → ["reducing web_api latency", "python web framework benchmarks", ...]
+
+# 2. Search, read, register findings (agent uses web_search + web_fetch)
+ka.register_source(url, title, source_type="documentation", relevance=0.9)
+ka.mark_source_read(url, summary="...", key_insights=["insight 1", ...])
+
+# 3. Extract techniques from what you read
+ka.extract_technique(source_url=url, name="connection_pooling",
+    description="Reuse DB connections across requests",
+    expected_impact="30-50% latency reduction",
+    evidence="Benchmarks show 3x throughput",
+    applicable_when="DB calls are the bottleneck")
+
+# 4. Get knowledge-backed hypothesis context for R2
+context = ka.hypothesis_context("connection_pooling", "DB latency 142ms")
+```
+
+**When to do external research:**
+- **First session on a new problem:** Read 5-7 sources before experimenting.
+  Spend 2-3 min per source. Stop when you have 3+ techniques to try.
+- **After hitting a plateau:** Search for techniques specific to your bottleneck.
+- **Before a Level 2 structural mutation:** Read docs on the technique you're adding.
+- **Never mid-experiment:** Research happens in R1, not during mutation.
+
+**Reading protocol:** For each source, extract: techniques (most valuable),
+architecture patterns, common pitfalls, and benchmarks. Call
+`ka.reading_protocol()` for the full protocol.
+
+The knowledge system persists in `.deepresearch/research/` — next session
+picks up where you left off. Techniques you've tried and their results
+carry forward, preventing repeated failures.
+
 ### R2: Causal Hypothesis (replaces "pick a random category")
 
 The bandit INFORMS but doesn't DICTATE. Before making any change, write:
@@ -361,6 +413,21 @@ Risk: warmup too long → wastes 10% of 5 min budget. Confidence: high."
 
 The good hypothesis has a THEORY of WHY. The bad one just follows statistics.
 
+**Knowledge-backed hypothesis (Level 2+):**
+When you have external knowledge from the acquisition system, reference it:
+
+"Bottleneck: DB connection overhead (142ms per request, from R1 Deep Read).
+Theory: Each request creates a new TCP connection + TLS handshake to the DB.
+The FastAPI Deployment Guide (source #1) documents that connection pooling
+reduces this to near-zero by reusing connections. Benchmarks in that source
+show 3x throughput improvement. Experiment: Add sqlalchemy connection pool
+with pool_size=20. Prediction: p99 drops from 142ms to ~60-80ms (50% reduction).
+Connects to: exp #3 confirmed DB calls are the bottleneck (profiling data).
+Risk: pool exhaustion under load → add max_overflow=10 as safety valve.
+Confidence: high — both profiling data and external benchmarks agree."
+
+Generate the context: `ka.hypothesis_context("connection_pooling", "DB latency")`
+
 ### R3: Reflection (after seeing results)
 
 After EVERY experiment, answer these questions in 2-3 sentences:
@@ -386,6 +453,17 @@ we fixed the LR first."
 
 The good reflection updates the causal model AND plans the next experiment.
 The bad one logs nothing useful.
+
+**If the experiment tested a technique from external research:**
+Record the result so the knowledge system learns:
+```python
+ka.record_result("connection_pooling", "worked: p99 from 142ms to 85ms")
+# or
+ka.record_result("connection_pooling", "failed: incompatible with async framework")
+```
+Next time `ka.suggest_next()` is called, successful techniques inform
+related suggestions and failed techniques are avoided. This knowledge
+persists across sessions.
 
 ### Chain of Thought Patterns
 
@@ -523,19 +601,46 @@ tuning (optimize what's already built).
 Generate templates: `python engine/level3.py curriculum-init web_api`
 Available: `web_api`, `ml_training`, `library`, `game`, `custom`.
 
-### Domain Research Protocol (Level 3)
+### Domain Research Protocol (Level 2+ and Level 3)
 
-Before writing code from a specification, the agent RESEARCHES the domain:
+Before coding or before a Level 2 structural mutation, the agent acquires
+domain knowledge using the knowledge system:
 
-1. **Understand the spec:** What is the input, output, constraints, metric?
-2. **Survey existing solutions:** Search for similar implementations, papers, tutorials
-3. **Identify the standard architecture:** Every domain has a "80% approach"
-4. **Plan the implementation order:** Dependencies first, optimization last
-5. **Define the curriculum:** Progressive goals from basic correctness to optimization
-6. **Begin the experiment loop:** With Level 2 mutations enabled
+```python
+from engine.knowledge import KnowledgeAcquisition
 
-Write research findings to `.deepresearch/domain_research.md` and the
-architecture plan to `.deepresearch/architecture_plan.md` before any code.
+ka = KnowledgeAcquisition(domain="web_api", spec="Optimize REST API", language="python")
+
+# 1. Generate search queries (prioritized by bottleneck)
+queries = ka.generate_searches(bottleneck="latency")
+
+# 2. For each query: web_search → read top results → register + extract
+for q in queries[:5]:
+    # Agent uses web_search(q["query"]), reads results
+    ka.register_source(url, title, source_type="documentation", relevance=0.9)
+    ka.mark_source_read(url, summary="...", key_insights=["..."])
+    ka.extract_technique(source_url=url, name="...", description="...",
+                        expected_impact="...", evidence="...",
+                        applicable_when="...", complexity="...")
+
+# 3. Get prioritized technique list
+next_technique = ka.suggest_next(current_bottleneck="DB latency")
+context = ka.hypothesis_context("connection_pooling", "DB latency 142ms")
+
+# 4. After each experiment, record the result
+ka.record_result("connection_pooling", "worked: p99 from 142ms to 85ms")
+```
+
+**The 6-step research flow:**
+1. **Understand the spec:** Input, output, constraints, metric
+2. **Generate searches:** `ka.generate_searches()` — targeted queries by domain + bottleneck
+3. **Read and extract:** 5-7 sources max, 2-3 min per source, extract techniques + pitfalls
+4. **Build technique library:** The agent's domain-specific menu, built from research (not pre-defined)
+5. **Define curriculum:** Progressive goals from correctness to optimization
+6. **Begin experiments:** Use `ka.suggest_next()` and `ka.hypothesis_context()` in R2
+
+All research persists in `.deepresearch/research/` (sources.json, techniques.json,
+domain_knowledge.json). Next session continues where the last stopped.
 
 ### When to Use Which Level
 

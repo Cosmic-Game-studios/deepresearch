@@ -147,6 +147,56 @@ def cmd_init(spec="", domain="custom"):
     print(f"\nNext step: python -m engine.level3 next")
 
 
+def cmd_knowledge(domain=None, spec=None, bottleneck=None):
+    """Show knowledge acquisition status and search queries."""
+    from engine.knowledge import KnowledgeAcquisition
+    ka = KnowledgeAcquisition(domain=domain or "general", spec=spec or "")
+
+    # Show research summary if sources exist
+    if ka.sources.sources:
+        print(ka.summary())
+    else:
+        print("No external knowledge acquired yet.\n")
+
+    # Show search queries
+    queries = ka.generate_searches(bottleneck=bottleneck)
+    print(f"Recommended search queries (domain: {ka.domain}):")
+    for i, q in enumerate(queries[:10], 1):
+        print(f"  {i}. [{q['priority']:.2f}] {q['query']}")
+
+    # Show reading protocol
+    if not ka.sources.sources:
+        print(f"\nTo start: search these queries, read the results, and use:")
+        print(f"  ka.register_source(url, title, source_type)")
+        print(f"  ka.mark_source_read(url, summary, key_insights)")
+        print(f"  ka.extract_technique(source_url, name, description, ...)")
+
+
+def cmd_techniques():
+    """Show discovered techniques."""
+    from engine.knowledge import TechniqueLibrary
+    lib = TechniqueLibrary()
+    if not lib.techniques:
+        print("No techniques discovered yet. Run domain research first.")
+        return
+    untried = lib.untried()
+    if untried:
+        print("Untried techniques (by priority):")
+        for t in untried:
+            print(f"  [{t.priority:.2f}] {t.name}: {t.description}")
+            print(f"         Impact: {t.expected_impact} | Complexity: {t.complexity}")
+    successful = lib.successful()
+    if successful:
+        print(f"\nSuccessful ({len(successful)}):")
+        for t in successful:
+            print(f"  ✅ {t.name}: {t.result}")
+    failed = lib.failed()
+    if failed:
+        print(f"\nFailed ({len(failed)}):")
+        for t in failed:
+            print(f"  ❌ {t.name}: {t.result}")
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("DeepResearch Level 2-3 Engine")
@@ -156,6 +206,8 @@ if __name__ == "__main__":
         print("  status                                  Full pipeline status")
         print("  next                                    What should the agent do next?")
         print("  research                                Current research phase")
+        print("  knowledge [--domain x] [--bottleneck y] Search queries + knowledge status")
+        print("  techniques                              Show discovered techniques")
         print("  architect                               Architecture plan")
         print("  bootstrap                               Create project structure")
         print("  curriculum [domain]                     Show/create curriculum")
@@ -174,6 +226,14 @@ if __name__ == "__main__":
     elif cmd == "curriculum": cmd_curriculum(sys.argv[2] if len(sys.argv) > 2 else None)
     elif cmd == "mutations": cmd_mutations()
     elif cmd == "discover": cmd_discover()
+    elif cmd == "knowledge":
+        kw = {}
+        for i, arg in enumerate(sys.argv[2:], 2):
+            if arg == "--domain" and i+1 < len(sys.argv): kw["domain"] = sys.argv[i+1]
+            elif arg == "--spec" and i+1 < len(sys.argv): kw["spec"] = sys.argv[i+1]
+            elif arg == "--bottleneck" and i+1 < len(sys.argv): kw["bottleneck"] = sys.argv[i+1]
+        cmd_knowledge(**kw)
+    elif cmd == "techniques": cmd_techniques()
     elif cmd == "init":
         spec = ""
         domain = "custom"
