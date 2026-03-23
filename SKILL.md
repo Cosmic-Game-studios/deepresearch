@@ -14,31 +14,38 @@ description: >
   "run the Karpathy loop", "explore and exploit".
 ---
 
-# DeepResearch — Autonomous Research Engine v2
+# DeepResearch — Autonomous Research Engine v3
 
-An evolution of the Karpathy autoresearch pattern. The original insight stays:
-hand the experiment loop to an AI agent and let it run autonomously. But where
-autoresearch uses greedy hill-climbing on a single branch, DeepResearch adds
-four layers of intelligence:
+Autoresearch tools treat LLMs as code editors following bandit statistics.
+DeepResearch treats the LLM as a **thinking researcher** — one that reads
+code, forms causal theories, designs experiments to test them, and reflects
+on results to update its understanding. Statistics inform but don't dictate.
 
-1. **Strategy Engine** — Bayesian bandit + simulated annealing replaces random exploration
-2. **Population Search** — Multiple competing branches, not just one best
-3. **Persistent Memory** — Knowledge survives across sessions and domains
-4. **Research Reports** — Auto-generated analysis of findings
+Built for Opus 4.6: leverages adaptive thinking for deep reasoning,
+1M context for holding entire research histories, and interleaved thinking
+for reasoning between tool calls. The model's intelligence IS the search
+strategy.
+
+Five layers:
+
+1. **Reasoning Layer** — Deep read → causal hypothesis → reflection (NEW — the core differentiator)
+2. **Strategy Engine** — Bayesian bandit + simulated annealing as researcher tools
+3. **Population Search** — Multiple competing branches with smart crossover
+4. **Persistent Memory** — Knowledge, patterns, anti-patterns, causal dependencies
+5. **Research Reports** — Auto-generated memos and session reports
 
 **Navigation** (for agents parsing this file):
 - **Phase 0** — Setup (config, eval harness templates, baseline)
+- **Reasoning Layer** — Deep Read, Causal Hypothesis, Reflection, Memos (READ THIS FIRST)
 - **Phase 1** — Core Loop (select → hypothesize → mutate → execute → score → log)
 - **Phase 1 Walkthrough** — End-to-end example with exact commands
 - **Phase 2** — Strategy Engine (momentum, plateau detection, regression, restarts)
 - **Phase 3** — Persistent Memory (knowledge.json schema, update protocol)
-- **Phase 4** — Multi-Agent (parallel architecture, orchestration)
+- **Phase 4** — Parallel Experiments (git worktrees, multi-GPU)
 - **Phase 5** — Research Reports (templates, auto-generation triggers)
 - **Domain Configurations** — ML, Code, Prompt, Game, Document presets
 - **Stopping Conditions** — When and how to end
 - **Error Recovery** — Validation, corruption repair, backups, safety
-- **Edge Cases** — NaN, conflicts, empty resume, timeouts
-- **Scaling** — 100+ experiments, log rotation, convergence detection
 
 The human's job: define what "better" means, set constraints, write `research.md`.
 The agent's job: everything else.
@@ -54,7 +61,10 @@ persistent state. This directory is THE brain — it persists across sessions.
 .deepresearch/
 ├── config.json          # Session config (metric, target, budget, etc.)
 ├── knowledge.json       # Cross-session knowledge base
+├── dependencies.json    # Causal dependency graph between experiments
 ├── experiments.jsonl     # Append-only experiment log (one JSON per line)
+├── memos/               # Research memos (every 10 experiments)
+│   └── memo-10.md       # Synthesized findings and theories
 ├── populations/          # Top-K branch snapshots
 │   ├── branch-0/         # Baseline snapshot
 │   ├── branch-1/         # Best variant 1
@@ -277,6 +287,79 @@ cp ${TARGET_FILES} .deepresearch/populations/branch-0/
 ```
 
 Confirm baseline with the human. After confirmation: **NEVER ASK AGAIN. RUN AUTONOMOUSLY.**
+
+---
+
+## The Reasoning Layer — What Makes This Different
+
+Every autoresearch tool treats the LLM as a code editor following bandit
+statistics. DeepResearch treats it as a **thinking researcher** using
+statistics as ONE input alongside understanding, theory, and reflection.
+
+Opus 4.6 can reason about WHY experiments work, see patterns across 100+
+experiments via its 1M context window, and form causal theories. The
+Reasoning Layer wraps three thinking steps around every experiment:
+
+### R1: Deep Read (before mutating)
+
+Don't grep for numbers. UNDERSTAND the artifact:
+1. Read the target file completely. What does each section do?
+2. Identify the **bottleneck** — what limits the metric RIGHT NOW?
+3. Check: has this bottleneck been addressed? Why didn't it work?
+4. Form a **causal model**: "The metric is X because of Y."
+
+### R2: Causal Hypothesis (replaces "pick a random category")
+
+The bandit INFORMS but doesn't DICTATE. Write before making changes:
+
+```
+## Hypothesis #N
+**Theory:** Metric limited by [bottleneck] because [cause].
+**Prediction:** Changing [thing] improves metric ~[amount] because [mechanism].
+**Connects to:** Builds on experiment #X which showed [finding].
+**Risk:** Fails if [condition]. Fallback: [alternative].
+**Confidence:** [low/medium/high]
+```
+
+The shift: autoresearch says "bandit picked architecture, change something."
+DeepResearch says "I read the code, the bottleneck is quadratic attention,
+experiments #5 and #8 showed efficiency changes compound, so I should try
+windowed attention. This is an architecture change but the REASON matters."
+
+### R3: Reflection (after seeing results)
+
+Don't just update a counter. THINK:
+1. Was my prediction correct? Direction? Magnitude?
+2. If YES → what's confirmed? What's the next logical experiment?
+3. If NO → was my theory wrong, implementation off, or interaction effect?
+4. What did I LEARN? Has the bottleneck shifted?
+
+Write a 2-3 sentence reflection. "Experiment #12 confirmed depth scaling
+has diminishing returns past 12 layers. Bottleneck shifted from capacity
+to optimization — next target: LR schedule." NOT just "Metric improved. Kept."
+
+### Research Memos (every 10 experiments)
+
+Write to `.deepresearch/memos/memo-N.md`:
+- **Current theory** — what you believe drives the metric
+- **Key findings** — what the last 10 experiments revealed
+- **Causal updates** — how your understanding changed
+- **Dead ends** — what to stop trying, and WHY
+- **Next direction** — where to focus next
+
+These memos are the most valuable output. They compound — memo #5
+references #3 which references #1, creating a coherent research narrative
+across the entire session.
+
+### Causal Dependencies
+
+Track which experiments depend on each other:
+```json
+{"experiment": 15, "depends_on": [7, 12],
+ "reason": "Muon (exp 7) only works with arch 7 (exp 12)"}
+```
+This enables smart ablation (skip independent changes) and smart
+crossover (combine only compatible changes).
 
 ---
 
