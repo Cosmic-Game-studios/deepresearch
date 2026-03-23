@@ -1173,110 +1173,32 @@ python -m engine.level3 curriculum
 
 ### Intelligent Exploration Strategies
 
-Beyond the basic bandit + annealing, use these meta-strategies:
+Beyond the basic bandit + annealing, the agent should watch for these patterns
+and act on them using the Reasoning Layer:
 
 **Momentum tracking:** If the last 3 experiments in a category all improved,
-double down — try a BIGGER change in the same category.
+go bigger in that category. If 3 consecutive failures, skip it for now.
+Check: read last 15 experiments from the log, group by category.
 
-```bash
-# Check momentum before selecting next experiment
-python3 -c "
-import json
-exps = [json.loads(l) for l in open('.deepresearch/experiments.jsonl') if l.strip()]
-# Group last 3 experiments per category
-from collections import defaultdict
-recent = defaultdict(list)
-for e in exps[-15:]:  # look at last 15
-    recent[e.get('category','?')].append(e.get('status'))
-for cat, statuses in recent.items():
-    last3 = statuses[-3:]
-    if len(last3) == 3 and all(s == 'kept' for s in last3):
-        print(f'MOMENTUM: {cat} — 3 consecutive wins, go bigger')
-    elif len(last3) == 3 and all(s in ('reverted','crashed') for s in last3):
-        print(f'ANTI-MOMENTUM: {cat} — 3 consecutive failures, skip')
-"
-```
+**Plateau detection:** If 5+ consecutive experiments show <0.1% change, the
+agent is in a flat region. Action: reheat temperature to `min(T * 3, 0.8)`,
+try an unused category, attempt a Level 2 structural mutation.
 
-**Plateau detection:** If 5+ consecutive experiments show <0.1% change,
-the agent is likely in a flat region. Trigger a reheat:
+**Regression analysis (every 20 experiments):** Use `python strategy.py status`
+and read the experiment log to answer:
+1. Which categories have the best success rate?
+2. Which pairs of categories improve when done sequentially? (interaction effects)
+3. Where do the biggest gains come from?
 
-```bash
-python3 -c "
-import json
-exps = [json.loads(l) for l in open('.deepresearch/experiments.jsonl') if l.strip()]
-recent = exps[-5:]
-if len(recent) >= 5 and all(abs(e.get('improvement_pct',0)) < 0.1 for e in recent):
-    print('PLATEAU: 5 experiments with <0.1% change — reheat recommended')
-"
-```
+The Reasoning Layer (R1) should INTERPRET these patterns — don't just follow
+numbers. "Architecture has 50% success rate" is less useful than "architecture
+improvements work because the model was underfitting, and now it's not."
 
-Reheat action: set `temperature = min(current_T * 3, 0.8)` in strategy-state.json,
-try a category unused in the last 10 experiments, and attempt a structural change.
-
-**Regression analysis:** After 20+ experiments, analyze the log programmatically:
-
-```bash
-# Run after every 20 experiments
-python3 -c "
-import json, collections
-exps = [json.loads(l) for l in open('.deepresearch/experiments.jsonl') if l.strip()]
-
-# 1. Category success rates
-cats = collections.defaultdict(lambda: {'kept':0,'total':0})
-for e in exps:
-    c = e.get('category','?')
-    cats[c]['total'] += 1
-    if e.get('status') == 'kept': cats[c]['kept'] += 1
-for c, s in sorted(cats.items(), key=lambda x: -x[1]['kept']/max(x[1]['total'],1)):
-    print(f'{c:20s} {s[\"kept\"]}/{s[\"total\"]} = {s[\"kept\"]/max(s[\"total\"],1)*100:.0f}%')
-
-# 2. Sequential success pairs (A kept then B kept = interaction)
-prev = None
-pairs = collections.Counter()
-for e in exps:
-    if e.get('status') == 'kept' and prev:
-        pairs[(prev, e['category'])] += 1
-    prev = e.get('category') if e.get('status') == 'kept' else None
-for (a,b), n in pairs.most_common(5):
-    print(f'Pair: {a} → {b}: {n} co-successes')
-
-# 3. Average improvement by category
-import statistics
-for c in cats:
-    imps = [e['improvement_pct'] for e in exps if e.get('category')==c and e.get('status')=='kept' and 'improvement_pct' in e]
-    if imps: print(f'{c}: avg improvement {statistics.mean(imps):.2f}%')
-"
-```
-
-Use the output to adjust bandit priors and focus the next 10 experiments.
-
-**Guided random restarts:** If stuck for 15+ experiments:
-
-```bash
-# 1. Save current best to population (it's already there via normal flow)
-
-# 2. Identify top-3 most impactful commits
-TOP3=$(python3 -c "
-import json
-exps = [json.loads(l) for l in open('.deepresearch/experiments.jsonl') if l.strip()]
-kept = [e for e in exps if e.get('status')=='kept' and e.get('improvement_pct',0)>0]
-kept.sort(key=lambda e: e['improvement_pct'], reverse=True)
-for e in kept[:3]: print(e.get('id'))
-")
-
-# 3. Reset to baseline
-git checkout deepresearch/branch-0 -- ${TARGET_FILES}
-
-# 4. Cherry-pick only the top-3 changes
-for ID in $TOP3; do
-  HASH=$(git log --all --oneline --grep="deepresearch #${ID}:" | awk '{print $1}')
-  [ -n "$HASH" ] && git cherry-pick --no-commit "$HASH"
-done
-git commit -m "deepresearch: guided restart with top-3 changes from experiments ${TOP3}"
-
-# 5. Continue the loop from this cleaner starting point
-# Temperature gets a reheat boost: T = min(current_T * 3, 0.8)
-```
+**Guided random restarts (if stuck 15+ experiments):**
+1. Identify top-3 most impactful experiments from the log
+2. Reset to baseline: `git checkout deepresearch/branch-0 -- $TARGET_FILES`
+3. Cherry-pick only those 3 changes (keeps proven wins, discards noise)
+4. Reheat temperature to 0.8, continue from this cleaner base
 
 ---
 
@@ -1344,42 +1266,19 @@ git commit -m "deepresearch: guided restart with top-3 changes from experiments 
 
 ### Memory Update Protocol
 
-After each experiment, run `python strategy.py update <result_json>` which
-handles knowledge updates automatically. The logic:
+`python strategy.py update <result_json>` handles all knowledge updates automatically:
+- **Pattern detection:** 3+ successes in a category → recorded as pattern
+- **Anti-pattern detection:** 3 consecutive failures → recorded as anti-pattern (stop trying)
+- **Domain insights:** at session end, best category and key findings are stored
 
-```python
-# Runs inside strategy.py update — excerpt of the key logic:
+At session START, `strategy.py select` automatically loads knowledge.json,
+biases bandit priors from past patterns, skips anti-pattern categories,
+and prints relevant insights for context.
 
-# 1. Pattern detection: 3+ successes in a category → record pattern
-cat_successes = [e for e in exps if e['category'] == cat and e['status'] == 'kept']
-if len(cat_successes) >= 3:
-    knowledge['patterns'].append({
-        'category': cat,
-        'description': f'{cat} has {len(cat_successes)} successes',
-        'confidence': len(cat_successes) / len(cat_exps)
-    })
-
-# 2. Anti-pattern: last 3 in category all failed → stop trying
-recent_3 = [e for e in exps if e['category'] == cat][-3:]
-if all(e['status'] in ('reverted','crashed') for e in recent_3):
-    knowledge['anti_patterns'].append({
-        'category': cat,
-        'description': f'{cat} failed 3 consecutive times',
-        'confidence': 0.8
-    })
-
-# 3. At session end: extract top insight
-best_cat = max(arms, key=lambda c: arms[c]['alpha'] / (arms[c]['alpha'] + arms[c]['beta']))
-knowledge['domain_insights'].append({
-    'insight': f'{best_cat} was the most productive category this session',
-    'source_session': session_id
-})
-```
-
-At session START, `strategy.py select` automatically:
-1. Loads knowledge.json and biases bandit arm priors from past success rates
-2. Skips categories with high-confidence anti-patterns
-3. Prints relevant insights for context
+The Knowledge Acquisition system (`engine/knowledge.py`) adds a second layer:
+techniques extracted from external research are stored in `.deepresearch/research/techniques.json`
+and their results (worked/failed) persist across sessions. This prevents the agent from
+re-trying techniques that already failed and reinforces techniques that worked.
 
 ### Cross-Session Continuity
 
@@ -1488,82 +1387,21 @@ The agent can also write custom sections based on its research memos.
 
 ## Domain Configurations
 
-### ML Training (original autoresearch domain)
+Initialize with `bash init.sh --domain <name>` — sets target, metric, categories, and curriculum automatically.
 
-**Target:** train.py
-**Metric:** val_bpb (lower is better)
-**Budget:** 300 seconds (5 min wall clock)
-**Mutation categories and example changes:**
+| Domain | Target | Metric | Direction | Key mutation categories |
+|---|---|---|---|---|
+| `ml` | train.py | val_loss | lower | architecture, hyperparameters, optimizer, regularization, scheduling, efficiency |
+| `web_api` | src/ | p99_latency_ms | lower | algorithm, caching, connection_pooling, async, error_handling |
+| `code` | target.py | benchmark_time | lower | algorithm, memory, parallelism, io, architecture |
+| `prompt` | prompt.txt | judge_score | higher | structure, specificity, tone, examples, guardrails, persona |
+| `game` | src/ | composite | higher | economy, combat, progression, map_balance, ai_behavior |
+| `library` | src/ | benchmark_ops_sec | higher | algorithm, api_design, error_handling, data_structures |
+| `custom` | src/ | primary_metric | higher | (you define) |
 
-- **architecture**: depth, width, attention patterns, activation functions,
-  normalization, positional encoding, head count
-- **hyperparameters**: learning rate, warmup steps, batch size, weight decay,
-  gradient clipping, dropout
-- **optimizer**: optimizer type, momentum, beta parameters, Muon vs AdamW mix,
-  learning rate schedules
-- **regularization**: dropout placement, weight tying, label smoothing,
-  stochastic depth
-- **data_processing**: sequence length, tokenizer vocab size, data sampling
-  strategy, curriculum learning
-- **scheduling**: LR schedule shape (cosine, linear, step), warmup duration,
-  cooldown, cycle length
-- **efficiency**: compilation flags, precision (bf16/fp16), memory optimization,
-  gradient accumulation steps
+Each domain also gets a curriculum template (see `python -m engine.level3 curriculum <domain>`).
 
-### Code Performance Optimization
-
-**Target:** specific source file(s)
-**Metric:** benchmark time, memory usage, or composite
-**Budget:** benchmark runtime + overhead (usually 30-120 seconds)
-**Mutation categories:**
-
-- **algorithm**: data structure changes, algorithmic complexity improvements,
-  caching strategies
-- **memory**: allocation patterns, pooling, reduce copies, in-place operations
-- **parallelism**: threading, async, SIMD hints, batch processing
-- **io**: buffering, lazy loading, serialization format
-- **language_features**: compiler hints, type optimizations, inlining
-- **architecture**: module decomposition, hot path optimization, code layout
-
-### Prompt Engineering
-
-**Target:** prompt template file
-**Metric:** LLM-as-judge score (0-10) or task accuracy
-**Budget:** N API calls per experiment (e.g., 10 test cases)
-**Mutation categories:**
-
-- **structure**: section ordering, heading hierarchy, instruction flow
-- **specificity**: adding/removing constraints, examples, edge cases
-- **tone**: formal/casual, assertive/collaborative, brief/detailed
-- **examples**: few-shot examples, counter-examples, format demonstrations
-- **guardrails**: boundary conditions, error handling instructions, refusal criteria
-- **persona**: role definition, expertise level, communication style
-
-### Game Balancing
-
-**Target:** config/balance files
-**Metric:** composite score (win rate variance, engagement proxy, fairness index)
-**Budget:** N simulation rounds
-**Mutation categories:**
-
-- **economy**: resource generation rates, costs, trade ratios, inflation control
-- **combat**: damage/health ratios, unit counters, speed/range tradeoffs
-- **progression**: XP curves, unlock timing, power scaling
-- **map_balance**: resource distribution, spawn fairness, strategic chokepoints
-- **ai_behavior**: AI difficulty scaling, aggression parameters, decision weights
-
-### Document Quality
-
-**Target:** markdown/text document
-**Metric:** LLM-as-judge rubric score
-**Budget:** single LLM eval call per experiment
-**Mutation categories:**
-
-- **structure**: section ordering, hierarchy, information flow
-- **clarity**: sentence length, jargon reduction, active voice
-- **completeness**: missing topics, edge cases, examples
-- **conciseness**: removing redundancy, tightening prose
-- **formatting**: headers, lists, code blocks, emphasis
+For Level 2+, use `python -m engine.level3 knowledge --domain <name>` to get domain-specific search queries for external knowledge acquisition.
 
 ---
 
