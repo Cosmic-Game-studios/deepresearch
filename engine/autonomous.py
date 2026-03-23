@@ -221,12 +221,14 @@ class Architect:
         self.plan_path.write_text(json.dumps(data, indent=2))
 
     def add_component(self, name: str, purpose: str, depends_on: list = None,
-                      files: list = None, estimated_experiments: int = 5) -> Component:
+                      files: list = None, test_file: str = "",
+                      estimated_experiments: int = 5) -> Component:
         """Add a component to the architecture."""
         c = Component(
             name=name, purpose=purpose,
             depends_on=depends_on or [],
             files=files or [],
+            test_file=test_file,
             estimated_experiments=estimated_experiments,
         )
         self.components.append(c)

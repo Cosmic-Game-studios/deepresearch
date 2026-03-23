@@ -1,133 +1,206 @@
-#!/usr/bin/env bash
-# DeepResearch — Project Initializer
-# Run this once in your project root to set up the .deepresearch directory.
-# Usage: bash init.sh [--domain ml|code|prompt|game|doc]
+#!/bin/bash
+# DeepResearch — Universal Project Initializer
+#
+# Usage:
+#   bash init.sh                              # Interactive
+#   bash init.sh --level 1 --domain ml        # Level 1, ML training
+#   bash init.sh --level 3 --domain web_api --spec "Build a REST API for tasks"
+#
+# Levels:
+#   1   — Parameter tuning (classic autoresearch)
+#   2   — Generative mutations (add/remove/replace code)
+#   3   — Autonomous engineer (spec → research → build → optimize)
+#
+# Domains: ml, code, prompt, game, web_api, library, optimization, custom
 
 set -e
 
-DOMAIN="${2:-custom}"
-DR_DIR=".deepresearch"
+# Parse args
+LEVEL=1
+DOMAIN="custom"
+SPEC=""
+TARGET=""
+METRIC=""
+BUDGET=300
 
-echo "🔬 Initializing DeepResearch..."
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --level) LEVEL="$2"; shift 2;;
+    --domain) DOMAIN="$2"; shift 2;;
+    --spec) SPEC="$2"; shift 2;;
+    --target) TARGET="$2"; shift 2;;
+    --metric) METRIC="$2"; shift 2;;
+    --budget) BUDGET="$2"; shift 2;;
+    *) echo "Unknown arg: $1"; exit 1;;
+  esac
+done
+
+echo "╔══════════════════════════════════════════════╗"
+echo "║  DeepResearch — Level $LEVEL Initialization          ║"
+echo "║  Domain: $DOMAIN                                 "
+echo "╚══════════════════════════════════════════════╝"
 
 # Create directory structure
-mkdir -p "$DR_DIR/populations/branch-0" "$DR_DIR/reports"
+mkdir -p .deepresearch/{memos,reports,research,backups,populations}
+
+# Mutation levels based on Level
+if [ "$LEVEL" -eq 1 ]; then
+  MUT_LEVELS="[1]"
+  MUT_CATS='["parametric"]'
+elif [ "$LEVEL" -eq 2 ]; then
+  MUT_LEVELS="[1, 2]"
+  MUT_CATS='["parametric", "structural_addition", "structural_removal", "structural_replacement", "integration"]'
+else
+  MUT_LEVELS="[1, 2, 3]"
+  MUT_CATS='["parametric", "structural_addition", "structural_removal", "structural_replacement", "integration", "architectural"]'
+fi
 
 # Domain-specific defaults
-case "$DOMAIN" in
+case $DOMAIN in
   ml)
-    METRIC="val_bpb"
+    TARGET="${TARGET:-train.py}"
+    METRIC="${METRIC:-val_loss}"
     DIRECTION="lower"
-    BUDGET=300
-    POP_SIZE=1
-    TEMP="moderate"
-    CATEGORIES='["architecture","hyperparameters","optimizer","regularization","scheduling","efficiency"]'
+    TEST_CMD=""
+    CURRICULUM_DOMAIN="ml_training"
     ;;
-  code)
-    METRIC="benchmark_ms"
+  web_api)
+    TARGET="${TARGET:-src/}"
+    METRIC="${METRIC:-p99_latency_ms}"
     DIRECTION="lower"
-    BUDGET=60
-    POP_SIZE=3
-    TEMP="moderate"
-    CATEGORIES='["algorithm","memory","parallelism","io","language_features","architecture"]'
-    ;;
-  prompt)
-    METRIC="judge_score"
-    DIRECTION="higher"
-    BUDGET=30
-    POP_SIZE=3
-    TEMP="aggressive"
-    CATEGORIES='["structure","specificity","tone","examples","guardrails","persona"]'
+    TEST_CMD="pytest tests/ -q"
+    CURRICULUM_DOMAIN="web_api"
     ;;
   game)
-    METRIC="balance_score"
+    TARGET="${TARGET:-src/}"
+    METRIC="${METRIC:-ai_vs_random_winrate}"
     DIRECTION="higher"
-    BUDGET=120
-    POP_SIZE=3
-    TEMP="moderate"
-    CATEGORIES='["economy","combat","progression","map_balance","ai_behavior"]'
+    TEST_CMD="pytest tests/ -q"
+    CURRICULUM_DOMAIN="game"
     ;;
-  doc)
-    METRIC="quality_score"
+  library)
+    TARGET="${TARGET:-src/}"
+    METRIC="${METRIC:-benchmark_ops_sec}"
     DIRECTION="higher"
-    BUDGET=15
-    POP_SIZE=3
-    TEMP="aggressive"
-    CATEGORIES='["structure","clarity","completeness","conciseness","formatting"]'
+    TEST_CMD="pytest tests/ -q"
+    CURRICULUM_DOMAIN="library"
+    ;;
+  code|optimization)
+    TARGET="${TARGET:-target.py}"
+    METRIC="${METRIC:-primary_metric}"
+    DIRECTION="lower"
+    TEST_CMD=""
+    CURRICULUM_DOMAIN="optimization"
+    ;;
+  prompt)
+    TARGET="${TARGET:-prompt.txt}"
+    METRIC="${METRIC:-score}"
+    DIRECTION="higher"
+    TEST_CMD=""
+    CURRICULUM_DOMAIN="optimization"
     ;;
   *)
-    METRIC="score"
+    TARGET="${TARGET:-src/}"
+    METRIC="${METRIC:-primary_metric}"
     DIRECTION="higher"
-    BUDGET=60
-    POP_SIZE=3
-    TEMP="moderate"
-    CATEGORIES='["category_a","category_b","category_c"]'
-    echo "⚠  Custom domain — edit .deepresearch/config.json with your specifics."
+    TEST_CMD=""
+    CURRICULUM_DOMAIN="custom"
     ;;
 esac
 
-# Write config
-cat > "$DR_DIR/config.json" << EOF
+# Write config.json
+cat > .deepresearch/config.json << CONFEOF
 {
-  "target_files": [],
+  "level": $LEVEL,
+  "domain": "$DOMAIN",
+  "target_files": ["$TARGET"],
+  "read_only_files": ["tests/", "eval.sh"],
   "metric": "$METRIC",
   "metric_direction": "$DIRECTION",
   "budget_seconds": $BUDGET,
-  "population_size": $POP_SIZE,
-  "temperature_schedule": "$TEMP",
-  "mutation_categories": $CATEGORIES,
-  "domain": "$DOMAIN",
-  "created": "$(date -Iseconds)",
-  "session_count": 0
+  "experiment_budget": 200,
+  "mutation_levels": $MUT_LEVELS,
+  "mutation_categories": $MUT_CATS,
+  "test_command": "$TEST_CMD",
+  "hard_constraints": [],
+  "spec": "$SPEC"
 }
-EOF
+CONFEOF
 
 # Initialize strategy state
-cat > "$DR_DIR/strategy-state.json" << EOF
+cat > .deepresearch/strategy-state.json << STATEEOF
 {
-  "temperature": 0.5,
+  "temperature": 1.0,
   "total_experiments": 0,
   "bandit_arms": {},
   "population": [],
+  "no_improvement_streak": 0,
   "best_metric": null,
-  "baseline_metric": null,
-  "metric_direction": "$DIRECTION"
+  "baseline_metric": null
 }
-EOF
+STATEEOF
 
 # Initialize knowledge base
-if [ ! -f "$DR_DIR/knowledge.json" ]; then
-  echo '{"patterns":[],"anti_patterns":[],"domain_insights":[],"cross_domain":[]}' > "$DR_DIR/knowledge.json"
-  echo "   Created fresh knowledge base"
-else
-  echo "   Existing knowledge base preserved ✓"
+cat > .deepresearch/knowledge.json << KNOWEOF
+{
+  "patterns": [],
+  "anti_patterns": [],
+  "domain_insights": [],
+  "cross_domain": []
+}
+KNOWEOF
+
+# Initialize dependencies tracker
+echo '{"dependencies":[]}' > .deepresearch/dependencies.json
+
+# Initialize empty experiment log
+touch .deepresearch/experiments.jsonl
+
+echo ""
+echo "✓ Config:     .deepresearch/config.json"
+echo "✓ Strategy:   .deepresearch/strategy-state.json"
+echo "✓ Knowledge:  .deepresearch/knowledge.json"
+echo "✓ Log:        .deepresearch/experiments.jsonl"
+
+# Level 2-3: Create curriculum
+if [ "$LEVEL" -ge 2 ]; then
+  echo ""
+  echo "Setting up Level $LEVEL features..."
+  python3 -c "
+import sys; sys.path.insert(0, '.')
+from engine.curriculum import CurriculumRunner
+runner = CurriculumRunner.create_from_template('$CURRICULUM_DOMAIN')
+print(f'✓ Curriculum: .deepresearch/curriculum.json ({len(runner.stages)} stages)')
+for i, s in enumerate(runner.stages, 1):
+    op = '≥' if s.get('direction','higher')=='higher' else '≤'
+    print(f'    Stage {i}: {s[\"name\"]} — {s[\"metric\"]} {op} {s[\"target\"]}')
+" 2>/dev/null || echo "  (curriculum requires engine/ modules — run from project root)"
 fi
 
-# Initialize experiment log
-touch "$DR_DIR/experiments.jsonl"
-
-# Add to .gitignore if not already there
-if [ -f .gitignore ]; then
-  if ! grep -q ".deepresearch/" .gitignore 2>/dev/null; then
-    echo ".deepresearch/" >> .gitignore
-    echo "   Added .deepresearch/ to .gitignore"
-  fi
-else
-  echo ".deepresearch/" > .gitignore
-  echo "   Created .gitignore with .deepresearch/"
+# Level 3: Initialize orchestrator
+if [ "$LEVEL" -ge 3 ]; then
+  python3 -c "
+import sys; sys.path.insert(0, '.')
+from engine.autonomous import Orchestrator
+orch = Orchestrator(spec='$SPEC')
+orch.save_state()
+print('✓ Orchestrator: .deepresearch/orchestrator_state.json')
+print(f'  Spec: ${SPEC:-"(not set — pass --spec)"}'[:60])
+print('  Phase: research → architect → bootstrap → build → test → optimize → report')
+" 2>/dev/null || echo "  (orchestrator requires engine/ modules)"
 fi
 
 echo ""
-echo "✅ DeepResearch initialized!"
-echo "   Directory: $DR_DIR/"
-echo "   Domain:    $DOMAIN"
-echo "   Metric:    $METRIC ($DIRECTION is better)"
-echo "   Budget:    ${BUDGET}s per experiment"
-echo "   Population: $POP_SIZE branches"
-echo "   Temperature: $TEMP"
-echo ""
-echo "Next steps:"
-echo "  1. Edit $DR_DIR/config.json — set your target_files"
-echo "  2. Create research.md — your research goals (see templates/)"
-echo "  3. Create an eval harness ($DR_DIR/eval.sh or eval.py)"
-echo "  4. Tell your agent: 'Read SKILL.md and start deepresearch'"
+echo "═══════════════════════════════════════════"
+if [ "$LEVEL" -eq 1 ]; then
+  echo "  Ready! Tell your agent:"
+  echo "  'Read SKILL.md and start deepresearch'"
+elif [ "$LEVEL" -eq 2 ]; then
+  echo "  Ready! Tell your agent:"
+  echo "  'Read SKILL.md, run: python -m engine.level3 next'"
+else
+  echo "  Ready! Tell your agent:"
+  echo "  'Read SKILL.md, run: python -m engine.level3 next'"
+  echo "  The orchestrator will guide it through all 7 phases."
+fi
+echo "═══════════════════════════════════════════"
