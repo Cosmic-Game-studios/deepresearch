@@ -298,68 +298,167 @@ statistics as ONE input alongside understanding, theory, and reflection.
 
 Opus 4.6 can reason about WHY experiments work, see patterns across 100+
 experiments via its 1M context window, and form causal theories. The
-Reasoning Layer wraps three thinking steps around every experiment:
+Reasoning Layer wraps three thinking steps around every experiment.
+
+**These thinking steps ARE the product.** The mechanical loop (mutate →
+eval → keep/revert) is commodity — every tool does it. The thinking is
+what makes experiments 28% more efficient at 50 experiments.
 
 ### R1: Deep Read (before mutating)
 
-Don't grep for numbers. UNDERSTAND the artifact:
-1. Read the target file completely. What does each section do?
-2. Identify the **bottleneck** — what limits the metric RIGHT NOW?
-3. Check: has this bottleneck been addressed? Why didn't it work?
-4. Form a **causal model**: "The metric is X because of Y."
+Don't grep for numbers. Build a mental model of the artifact.
+
+**What to think about:**
+1. Read the target file. What does each section/function/block do?
+2. What is the **bottleneck** — the ONE thing limiting the metric most?
+3. Has this bottleneck been targeted before? What happened?
+4. What is my **causal model** of how the metric is produced?
+
+**Example — good Deep Read (ML training):**
+"The model is a 8-layer transformer with Muon+AdamW. Training runs for
+5 minutes. Looking at the architecture: attention is standard full
+attention — O(n²) in sequence length. With seq_len=1024 and 8 layers,
+attention dominates compute. The optimizer has default hyperparams —
+never tuned. I think the bottleneck is the optimizer, not the
+architecture, because experiments #3 and #7 both changed architecture
+with minimal effect, but experiment #5 (LR change) gave the biggest
+improvement so far. Causal model: metric is limited by suboptimal LR
+schedule → model doesn't converge fully in 5 minutes."
+
+**Example — bad Deep Read:**
+"The file has 200 lines. I'll change something in the architecture."
+
+The difference: the good read identifies a SPECIFIC bottleneck with
+evidence from past experiments. The bad read is just scanning.
 
 ### R2: Causal Hypothesis (replaces "pick a random category")
 
-The bandit INFORMS but doesn't DICTATE. Write before making changes:
+The bandit INFORMS but doesn't DICTATE. Before making any change, write:
 
 ```
 ## Hypothesis #N
-**Theory:** Metric limited by [bottleneck] because [cause].
-**Prediction:** Changing [thing] improves metric ~[amount] because [mechanism].
-**Connects to:** Builds on experiment #X which showed [finding].
-**Risk:** Fails if [condition]. Fallback: [alternative].
-**Confidence:** [low/medium/high]
+**Bottleneck:** [what limits the metric right now, from Deep Read]
+**Theory:** [why this is the bottleneck — causal mechanism]
+**Experiment:** Change [specific thing] to test this theory
+**Prediction:** Metric should improve by ~[amount] because [mechanism]
+**Connects to:** Builds on experiment #X which showed [finding]
+**Risk:** Fails if [condition]. Fallback: [alternative]
+**Confidence:** [low/medium/high] — low = speculative, high = strong evidence
 ```
 
-The shift: autoresearch says "bandit picked architecture, change something."
-DeepResearch says "I read the code, the bottleneck is quadratic attention,
-experiments #5 and #8 showed efficiency changes compound, so I should try
-windowed attention. This is an architecture change but the REASON matters."
+**Example — good hypothesis:**
+"Bottleneck: LR schedule. Theory: constant LR means the model overshoots
+early and undershoots late, wasting training budget. Experiment: switch
+to cosine schedule with 10% warmup. Prediction: ~2% improvement because
+cosine is known to help with short training budgets. Connects to: exp #5
+showed LR sensitivity — the landscape around the optimum is narrow.
+Risk: warmup too long → wastes 10% of 5 min budget. Confidence: high."
+
+**Example — bad hypothesis:**
+"I'll try changing the learning rate. Bandit says hyperparameters work."
+
+The good hypothesis has a THEORY of WHY. The bad one just follows statistics.
 
 ### R3: Reflection (after seeing results)
 
-Don't just update a counter. THINK:
-1. Was my prediction correct? Direction? Magnitude?
-2. If YES → what's confirmed? What's the next logical experiment?
-3. If NO → was my theory wrong, implementation off, or interaction effect?
-4. What did I LEARN? Has the bottleneck shifted?
+After EVERY experiment, answer these questions in 2-3 sentences:
 
-Write a 2-3 sentence reflection. "Experiment #12 confirmed depth scaling
-has diminishing returns past 12 layers. Bottleneck shifted from capacity
-to optimization — next target: LR schedule." NOT just "Metric improved. Kept."
+1. **Prediction accuracy:** Was I right about direction AND magnitude?
+2. **Why:** If correct → what's confirmed? If wrong → which of these:
+   (a) wrong theory (b) right theory, wrong implementation (c) interaction effect
+3. **Bottleneck shift:** Is the bottleneck still the same, or did this
+   experiment move it somewhere else?
+4. **Next move:** What is the LOGICAL next experiment given what I just learned?
+
+**Example — good reflection:**
+"Predicted ~2% improvement from cosine LR, got 1.8%. Theory confirmed:
+short training budgets benefit from aggressive early LR. The bottleneck
+has now shifted — LR is optimized, but the model is only 8 layers deep
+and the loss curve shows it's still improving at t=5min. Next: try
+depth=12 to give the model more capacity to USE the better LR schedule.
+This is a dependent change — depth increase only makes sense because
+we fixed the LR first."
+
+**Example — bad reflection:**
+"Metric improved by 1.8%. Kept."
+
+The good reflection updates the causal model AND plans the next experiment.
+The bad one logs nothing useful.
+
+### Chain of Thought Patterns
+
+Use these thinking patterns to reason about experiments:
+
+**Bottleneck analysis:** "What is the weakest link? If I could magically
+fix ONE thing, which change would give the biggest improvement?"
+
+**Counterfactual reasoning:** "If I reverted experiment #N, would the
+later experiments still work? If not, #N is a dependency."
+
+**Diminishing returns detection:** "Each time I improve X, the gain gets
+smaller. Is X approaching its optimal? Should I switch to Y?"
+
+**Interaction hunting:** "A and B each improved the metric alone. What
+happens if I combine them? If A+B > A + B, there's a positive interaction."
+
+**Failure analysis:** "This change should have worked but didn't. What
+assumption was wrong? Was the cause something I can observe in the data?"
 
 ### Research Memos (every 10 experiments)
 
 Write to `.deepresearch/memos/memo-N.md`:
-- **Current theory** — what you believe drives the metric
-- **Key findings** — what the last 10 experiments revealed
-- **Causal updates** — how your understanding changed
-- **Dead ends** — what to stop trying, and WHY
-- **Next direction** — where to focus next
 
-These memos are the most valuable output. They compound — memo #5
-references #3 which references #1, creating a coherent research narrative
-across the entire session.
+```markdown
+# Research Memo — Experiments #N to #N+10
+
+## Current Theory of the Metric
+[1-2 sentences: what you believe drives the metric right now]
+
+## Key Findings
+[What the last 10 experiments revealed — specific, with numbers]
+
+## Causal Model Update
+[How your understanding of cause→effect changed. Draw the chain:]
+[e.g., "LR schedule → convergence speed → final loss. Depth → capacity
+→ but only useful if LR is already good (dependency discovered in exp #12)"]
+
+## Dead Ends (stop trying)
+[What to never try again, with evidence WHY it fails]
+
+## Next Direction
+[Where the next 10 experiments should focus. Be specific.]
+
+## Open Questions
+[What you DON'T understand yet. What experiment would answer it?]
+```
+
+These memos compound. Memo #3 references memo #1's theory and either
+confirms or updates it. A session with good memos produces a coherent
+research narrative. A session without them is just random search with a
+prettier log.
 
 ### Causal Dependencies
 
 Track which experiments depend on each other:
 ```json
 {"experiment": 15, "depends_on": [7, 12],
- "reason": "Muon (exp 7) only works with arch 7 (exp 12)"}
+ "reason": "Muon (exp 7) only works with arch 7 (exp 12). Reverting 12 would break 15."}
 ```
-This enables smart ablation (skip independent changes) and smart
-crossover (combine only compatible changes).
+Use dependencies for: smart ablation (only test dependent changes),
+smart crossover (don't combine conflicting dependencies), and session
+handoff (next session knows which changes are load-bearing).
+
+### When NOT to Think Deep
+
+Not every experiment needs 5 minutes of reasoning. Scale thinking to
+temperature and experiment phase:
+
+- **T > 0.7 (exploring):** Full Deep Read + Hypothesis. You're searching
+  for the right direction — thinking is high-value here.
+- **T 0.3-0.7 (narrowing):** Brief hypothesis. You know the direction,
+  just need to find the right magnitude.
+- **T < 0.3 (fine-tuning):** Minimal hypothesis. "Nudging LR from 3e-4
+  to 2.5e-4, expect <0.5% improvement." Don't overthink small changes.
 
 ---
 
@@ -1070,102 +1169,9 @@ Generate a report when:
 To generate: `python strategy.py report` — this reads experiments.jsonl and
 strategy-state.json and writes the full report to `.deepresearch/reports/`.
 
-Alternatively, the agent can call the report logic directly:
-
-```bash
-python3 -c "
-import json, datetime
-exps = [json.loads(l) for l in open('.deepresearch/experiments.jsonl') if l.strip()]
-state = json.load(open('.deepresearch/strategy-state.json'))
-config = json.load(open('.deepresearch/config.json'))
-
-total = len(exps)
-kept = sum(1 for e in exps if e.get('status')=='kept')
-crashed = sum(1 for e in exps if e.get('status')=='crashed')
-baseline = state.get('baseline_metric', exps[0].get('metric') if exps else 'N/A')
-best = state.get('best_metric', baseline)
-direction = config.get('metric_direction','lower')
-if baseline and best and isinstance(baseline,(int,float)):
-    imp = ((baseline-best)/baseline*100) if direction=='lower' else ((best-baseline)/baseline*100)
-else: imp = 0
-
-# Top improvements
-top = sorted([e for e in exps if e.get('status')=='kept' and e.get('improvement_pct',0)>0],
-             key=lambda e: e['improvement_pct'], reverse=True)[:10]
-
-now = datetime.datetime.now().strftime('%Y%m%d-%H%M')
-report = f'''# DeepResearch Report
-**Date:** {now} | **Experiments:** {total} ({kept} kept, {total-kept-crashed} reverted, {crashed} crashed)
-**Baseline:** {baseline} | **Best:** {best} | **Improvement:** {imp:+.2f}%
-
-## Top Changes
-'''
-for i,e in enumerate(top,1):
-    report += f\"{i}. #{e['id']} ({e.get('category','?')}): {e.get('mutation_description',e.get('hypothesis','?'))} → {e.get('improvement_pct',0):+.2f}%\n\"
-
-open(f'.deepresearch/reports/session-{now}.md','w').write(report)
-print(f'Report saved to .deepresearch/reports/session-{now}.md')
-"
-```
-
-### Report Template
-
-Write to `.deepresearch/reports/session-YYYYMMDD-HHMM.md`:
-
-```markdown
-# DeepResearch Report — [Project/Domain]
-**Session:** session-YYYYMMDD-HHMM
-**Duration:** X hours, Y experiments
-**Date:** YYYY-MM-DD
-
-## Executive Summary
-[2-3 sentences: what was optimized, how much it improved, key finding]
-
-## Results
-- **Baseline:** X.XXX
-- **Final best:** X.XXX
-- **Improvement:** +/-X.X%
-- **Experiments run:** N total, N kept, N reverted, N crashed
-- **Success rate:** X%
-
-## Strategy Analysis
-
-### Bandit Arm Performance
-| Category | Trials | Successes | Success Rate | Avg Improvement |
-|---|---|---|---|---|
-| architecture | 12 | 5 | 42% | 0.8% |
-| hyperparameters | 8 | 2 | 25% | 0.3% |
-| ... | | | | |
-
-### Temperature Profile
-[How the temperature evolved, when reheats happened, annealing decisions]
-
-### Population Diversity
-[How branches diverged, crossover results, which branches survived]
-
-## Top 10 Most Impactful Changes
-1. **Experiment #N** (category): [description] → [metric change] [+/-X.X%]
-2. ...
-
-## Failed Approaches (Negative Results)
-[These are equally valuable — document what DOESN'T work]
-- [Approach]: tried N times, [why it fails]
-- ...
-
-## Discovered Patterns
-[New entries added to knowledge.json during this session]
-
-## Ablation Results
-[Which changes in the best branch actually matter vs are noise]
-
-## Recommendations for Next Session
-1. [Most promising unexplored direction]
-2. [Category worth deeper exploration]
-3. [Suggested config changes for next run]
-
-## Appendix: Full Experiment Log
-[Reference to experiments.jsonl or condensed table]
-```
+The report includes: executive summary, baseline→best metric, top 10 changes,
+failed approaches, bandit arm performance, and recommendations for next session.
+The agent can also write custom sections based on its research memos.
 
 ---
 
@@ -1337,135 +1343,24 @@ When stopping for ANY reason:
 
 ## Error Recovery
 
-### State Validation (run at session start)
+At session start, validate state files: config.json (required keys), strategy-state.json
+(temperature, arms, population), experiments.jsonl (valid JSON per line), knowledge.json
+(arrays exist). If corrupted:
 
-Before any experiment, validate all persistent state. Corrupted files are
-the most common silent failure — catch them before they cascade.
+1. `config.json` → re-run `init.sh` or restore from git
+2. `strategy-state.json` → rebuild from experiments.jsonl: `python strategy.py status` shows what's recoverable. The experiment log is the source of truth — bandit arms and temperature can be recomputed from it.
+3. `experiments.jsonl` bad lines → `python3 -c "import json; lines=open('.deepresearch/experiments.jsonl').readlines(); open('.deepresearch/experiments.jsonl','w').writelines(l for l in lines if l.strip() and json.loads(l))"`
+4. `knowledge.json` → reset: `echo '{"patterns":[],"anti_patterns":[],"domain_insights":[],"cross_domain":[]}' > .deepresearch/knowledge.json`
 
-```bash
-# .deepresearch/validate.sh — run at session start
-#!/bin/bash
-set -e
-ERRORS=0
+**Backups:** Every 10 experiments: `mkdir -p .deepresearch/backups/$(date +%s) && cp .deepresearch/*.json .deepresearch/backups/$(date +%s)/`
 
-# 1. Validate config.json
-python3 -c "
-import json, sys
-c = json.load(open('.deepresearch/config.json'))
-required = ['target_files','metric','metric_direction','budget_seconds','mutation_categories']
-missing = [k for k in required if k not in c]
-if missing: print(f'config.json missing keys: {missing}'); sys.exit(1)
-if c['metric_direction'] not in ('lower','higher'): print('invalid metric_direction'); sys.exit(1)
-" || { echo "✗ config.json corrupted"; ERRORS=$((ERRORS+1)); }
+**Crash recovery:** experiments.jsonl is append-only (no data loss), strategy-state.json
+saved after every experiment, population snapshots are git-managed. Next session loads
+all state and continues automatically.
 
-# 2. Validate strategy-state.json
-python3 -c "
-import json, sys
-s = json.load(open('.deepresearch/strategy-state.json'))
-required = ['temperature','total_experiments','bandit_arms','population']
-missing = [k for k in required if k not in s]
-if missing: print(f'strategy-state.json missing: {missing}'); sys.exit(1)
-if not (0 <= s['temperature'] <= 2): print('temperature out of range'); sys.exit(1)
-" || { echo "✗ strategy-state.json corrupted"; ERRORS=$((ERRORS+1)); }
+**Git safety:** `git stash` before experiments, `git reset --hard` on revert, `.deepresearch/` in `.gitignore`, branches named `deepresearch/session-YYYYMMDD-HHMM`.
 
-# 3. Validate experiments.jsonl (each line must be valid JSON)
-if [ -f .deepresearch/experiments.jsonl ]; then
-  LINE=0
-  while IFS= read -r line; do
-    LINE=$((LINE+1))
-    echo "$line" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null || {
-      echo "✗ experiments.jsonl corrupted at line $LINE"
-      ERRORS=$((ERRORS+1))
-    }
-  done < .deepresearch/experiments.jsonl
-fi
-
-# 4. Validate knowledge.json
-python3 -c "
-import json
-k = json.load(open('.deepresearch/knowledge.json'))
-assert isinstance(k.get('patterns'), list)
-assert isinstance(k.get('anti_patterns'), list)
-" 2>/dev/null || { echo "✗ knowledge.json corrupted"; ERRORS=$((ERRORS+1)); }
-
-if [ $ERRORS -gt 0 ]; then
-  echo "⚠ $ERRORS validation errors — run repair"
-  exit 1
-else
-  echo "✓ All state files valid"
-fi
-```
-
-### Corruption Repair
-
-If validation fails, repair in this order:
-
-1. **config.json corrupted** → Rebuild from git history:
-   `git log --all --oneline -- .deepresearch/config.json` then restore,
-   or re-run `init.sh` with the same domain settings.
-
-2. **strategy-state.json corrupted** → Rebuild from experiments.jsonl:
-   ```bash
-   python3 -c "
-   import json
-   exps = [json.loads(l) for l in open('.deepresearch/experiments.jsonl') if l.strip()]
-   arms = {}
-   for e in exps:
-       cat = e.get('category','unknown')
-       if cat not in arms: arms[cat] = {'alpha':1,'beta':1,'trials':0}
-       arms[cat]['trials'] += 1
-       if e.get('status') in ('kept','accepted-worse'): arms[cat]['alpha'] += 1
-       else: arms[cat]['beta'] += 1
-   best = min((e['metric'] for e in exps if 'metric' in e and isinstance(e['metric'],(int,float))), default=None)
-   state = {'temperature':0.5,'total_experiments':len(exps),'bandit_arms':arms,'population':[],'best_metric':best,'baseline_metric':exps[0]['metric'] if exps else None}
-   json.dump(state, open('.deepresearch/strategy-state.json','w'), indent=2)
-   print('✓ Rebuilt strategy-state.json from experiment log')
-   "
-   ```
-
-3. **experiments.jsonl has bad lines** → Filter them out:
-   ```bash
-   python3 -c "
-   import json
-   good = []
-   for line in open('.deepresearch/experiments.jsonl'):
-       try: json.loads(line); good.append(line)
-       except: pass
-   open('.deepresearch/experiments.jsonl','w').writelines(good)
-   print(f'✓ Kept {len(good)} valid experiment records')
-   "
-   ```
-
-4. **knowledge.json corrupted** → Reset (knowledge is derived, not primary):
-   `echo '{"patterns":[],"anti_patterns":[],"domain_insights":[],"cross_domain":[]}' > .deepresearch/knowledge.json`
-
-### Backup Protocol
-
-After every 10 experiments, create a timestamped state backup:
-```bash
-BACKUP=".deepresearch/backups/$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$BACKUP"
-cp .deepresearch/config.json .deepresearch/strategy-state.json .deepresearch/knowledge.json "$BACKUP/"
-cp .deepresearch/experiments.jsonl "$BACKUP/"
-```
-
-### Crash Recovery
-If the agent itself crashes or the session is interrupted:
-- `.deepresearch/experiments.jsonl` is append-only — no data loss
-- `.deepresearch/strategy-state.json` is saved after every experiment
-- Population snapshots are git-managed — always recoverable
-- Next session: run `validate.sh`, repair if needed, then continue
-
-### Git Safety
-- Every experiment starts with `git stash` if there are uncommitted changes
-- Every revert uses `git reset --hard` to a known-good commit
-- The `.deepresearch/` directory is in `.gitignore` (state persists locally)
-- Branch naming: `deepresearch/session-YYYYMMDD-HHMM`
-
-### Rate Limiting (for LLM-as-judge evals)
-- Track API usage in strategy-state.json
-- If rate-limited, pause and retry with exponential backoff
-- Reduce parallel agent count if hitting limits
+**Rate limiting:** Track API usage in strategy-state.json, exponential backoff on limits.
 
 ### Safety Guardrails
 
