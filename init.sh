@@ -175,6 +175,19 @@ for i, s in enumerate(runner.stages, 1):
     op = '≥' if s.get('direction','higher')=='higher' else '≤'
     print(f'    Stage {i}: {s[\"name\"]} — {s[\"metric\"]} {op} {s[\"target\"]}')
 " 2>/dev/null || echo "  (curriculum requires engine/ modules — run from project root)"
+
+  # Initialize knowledge acquisition with domain-specific search queries
+  python3 -c "
+import sys; sys.path.insert(0, '.')
+from engine.knowledge import KnowledgeAcquisition
+ka = KnowledgeAcquisition(domain='$DOMAIN', spec='$SPEC', language='python')
+queries = ka.generate_searches()
+print(f'✓ Knowledge:  Ready for domain research')
+print(f'  Top search queries:')
+for q in queries[:3]:
+    print(f'    [{q[\"priority\"]:.2f}] {q[\"query\"]}')
+print(f'  Run: python -m engine.level3 knowledge --domain $DOMAIN')
+" 2>/dev/null || echo "  (knowledge requires engine/ modules)"
 fi
 
 # Level 3: Initialize orchestrator

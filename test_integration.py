@@ -365,10 +365,169 @@ def test_curriculum_report():
 
 
 # ═══════════════════════════════════════════════════════════
+# Knowledge Acquisition Tests
+# ═══════════════════════════════════════════════════════════
+
+@test("SearchStrategy generates prioritized queries")
+def test_search_strategy():
+    from engine.knowledge import SearchStrategy
+    queries = SearchStrategy.generate(domain="web_api", spec="Optimize REST API",
+                                      language="python", bottleneck="latency")
+    check(len(queries) > 5, f"Should have 5+ queries, got {len(queries)}")
+    check(queries[0]["priority"] > 0.8, "First query should be high priority")
+    check(all("query" in q for q in queries), "All entries should have 'query' key")
+    check(all("priority" in q for q in queries), "All entries should have 'priority'")
+    check(all("category" in q for q in queries), "All entries should have 'category'")
+    # Verify priority ordering
+    for i in range(len(queries) - 1):
+        check(queries[i]["priority"] >= queries[i+1]["priority"], "Queries should be sorted by priority")
+    # Bottleneck queries should be high priority
+    bottleneck_qs = [q for q in queries if q["category"] == "bottleneck"]
+    check(len(bottleneck_qs) > 0, "Should have bottleneck-specific queries")
+
+
+@test("SourceManager tracks reading list")
+def test_source_manager():
+    from engine.knowledge import SourceManager
+    tmpdir = tempfile.mkdtemp()
+    old_dr = os.environ.get("DR_DIR")
+    import engine.knowledge as kmod
+    kmod.DR_DIR = Path(tmpdir) / ".deepresearch"
+    kmod.DR_DIR.mkdir(parents=True, exist_ok=True)
+
+    sm = SourceManager()
+    sm.path = kmod.DR_DIR / "research" / "sources.json"
+    sm.sources = []
+
+    s = sm.add("https://example.com/docs", "Example Docs", "documentation", 0.9)
+    check(s.url == "https://example.com/docs", "Source URL should match")
+    check(not s.read, "Source should not be read yet")
+    check(len(sm.unread()) == 1, "Should have 1 unread source")
+
+    sm.mark_read("https://example.com/docs", "Great docs about caching",
+                 ["Caching reduces latency by 50%", "Use Redis for sessions"])
+    check(sm.sources[0].read, "Source should be marked read")
+    check(len(sm.sources[0].key_insights) == 2, "Should have 2 insights")
+    check(len(sm.unread()) == 0, "Should have 0 unread")
+
+    insights = sm.all_insights()
+    check(len(insights) == 2, f"Should have 2 insights, got {len(insights)}")
+
+    # Deduplication
+    sm.add("https://example.com/docs", "Example Docs", "documentation")
+    check(len(sm.sources) == 1, "Should not duplicate sources")
+
+    kmod.DR_DIR = Path(".deepresearch")
+    shutil.rmtree(tmpdir)
+
+
+@test("TechniqueLibrary extraction and prioritization")
+def test_technique_library():
+    from engine.knowledge import TechniqueLibrary
+    tmpdir = tempfile.mkdtemp()
+    import engine.knowledge as kmod
+    kmod.DR_DIR = Path(tmpdir) / ".deepresearch"
+    kmod.DR_DIR.mkdir(parents=True, exist_ok=True)
+
+    lib = TechniqueLibrary()
+    lib.path = kmod.DR_DIR / "research" / "techniques.json"
+    lib.techniques = []
+
+    t1 = lib.add("connection_pooling", "Reuse DB connections",
+                 source_url="https://example.com",
+                 expected_impact="30-50% latency reduction",
+                 evidence="Benchmarks show 3x throughput",
+                 complexity="moderate",
+                 applicable_when="DB bottleneck")
+    check(t1.priority > 0.5, f"Should have decent priority, got {t1.priority}")
+
+    t2 = lib.add("lazy_loading", "Load data on demand",
+                 source_url="https://example.com",
+                 expected_impact="minor improvement",
+                 complexity="simple")
+    check(t2.priority < t1.priority, "Lower-evidence technique should have lower priority")
+
+    untried = lib.untried()
+    check(len(untried) == 2, f"Should have 2 untried, got {len(untried)}")
+    check(untried[0].name == "connection_pooling", "Higher priority should come first")
+
+    lib.mark_tried("connection_pooling", "worked: p99 from 142ms to 85ms")
+    check(len(lib.untried()) == 1, "Should have 1 untried after marking")
+    check(len(lib.successful()) == 1, "Should have 1 successful")
+
+    # Deduplication
+    lib.add("connection_pooling", "Updated description", source_url="https://other.com")
+    check(len(lib.techniques) == 2, "Should not duplicate techniques")
+
+    kmod.DR_DIR = Path(".deepresearch")
+    shutil.rmtree(tmpdir)
+
+
+@test("KnowledgeAcquisition end-to-end flow")
+def test_knowledge_acquisition_e2e():
+    from engine.knowledge import KnowledgeAcquisition
+    tmpdir = tempfile.mkdtemp()
+    import engine.knowledge as kmod
+    kmod.DR_DIR = Path(tmpdir) / ".deepresearch"
+    kmod.DR_DIR.mkdir(parents=True, exist_ok=True)
+    (kmod.DR_DIR / "research").mkdir(parents=True, exist_ok=True)
+
+    ka = KnowledgeAcquisition(domain="web_api", spec="Optimize API", language="python")
+    ka.sources.path = kmod.DR_DIR / "research" / "sources.json"
+    ka.sources.sources = []
+    ka.techniques.path = kmod.DR_DIR / "research" / "techniques.json"
+    ka.techniques.techniques = []
+
+    # Generate searches
+    queries = ka.generate_searches(bottleneck="latency")
+    check(len(queries) > 3, "Should generate multiple queries")
+
+    # Register + read source
+    ka.register_source("https://docs.example.com", "API Perf Guide", "documentation", 0.9)
+    ka.mark_source_read("https://docs.example.com", "Guide about API optimization",
+                       ["Use connection pooling", "Cache aggressively"])
+
+    # Extract technique
+    ka.extract_technique(source_url="https://docs.example.com",
+                        name="connection_pooling",
+                        description="Reuse DB connections",
+                        expected_impact="30-50% reduction",
+                        evidence="Benchmarks show 3x",
+                        applicable_when="DB bottleneck")
+
+    # Suggest next
+    tech = ka.suggest_next(current_bottleneck="DB connections")
+    check(tech is not None, "Should suggest a technique")
+    check(tech.name == "connection_pooling", "Should suggest connection pooling")
+
+    # Hypothesis context
+    ctx = ka.hypothesis_context("connection_pooling", "DB latency 142ms")
+    check("connection_pooling" in ctx, "Context should mention technique")
+    check("142ms" in ctx, "Context should mention bottleneck")
+    check("Evidence" in ctx, "Context should include evidence")
+
+    # Record result
+    ka.record_result("connection_pooling", "worked: p99 from 142ms to 85ms")
+    check(ka.suggest_next() is None, "No untried techniques left")
+
+    # Summary
+    summary = ka.summary()
+    check("Sources:" in summary, "Summary should show sources")
+    check("Successful" in summary, "Summary should show successful techniques")
+
+    kmod.DR_DIR = Path(".deepresearch")
+    shutil.rmtree(tmpdir)
+
+
+# ═══════════════════════════════════════════════════════════
 # Runner
 # ═══════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    # Clean any leftover state from previous runs
+    if os.path.exists(".deepresearch"):
+        shutil.rmtree(".deepresearch")
+
     print(f"{'═'*60}")
     print(f"  DeepResearch Integration Tests")
     print(f"{'═'*60}\n")

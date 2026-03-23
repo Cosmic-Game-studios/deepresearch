@@ -1087,56 +1087,84 @@ else:
 
 ---
 
-### End-to-End Walkthrough — One Full Experiment
+### End-to-End Walkthrough — One Full Experiment (Level 2)
 
-This shows experiment #7. The commands are domain-agnostic — substitute your
-target file and metric. Examples: `train.py`/`val_bpb` (ML), `app.py`/`response_ms`
-(code), `prompt.md`/`judge_score` (prompt), `balance.json`/`fairness_idx` (game).
+This shows experiment #7 on a web API optimization project. Demonstrates
+the complete flow: curriculum → knowledge → R1 → R2 → strategy → mutate → eval → R3.
 
-```bash
-# 1. Strategy Engine selects parameters
-python strategy.py select
-# Output: {"category": "architecture", "branch": "branch-1", "temperature": 0.38, "experiment_number": 7}
-
-# 2. Agent reads current best on branch-1 and forms hypothesis
-git checkout deepresearch/branch-1
-cat ${TARGET_FILE} | head -50
-cat .deepresearch/experiments.jsonl | tail -5  # Review recent experiments
-# Hypothesis: "Changing X should improve ${METRIC} — experiments #3 and #5
-# both improved with similar changes. T=0.38 supports moderate boldness."
-
-# 3. Mutate: make ONE change to the target file
-# (edit depends on domain — sed, patch, direct rewrite, etc.)
-
-# 4. Execute eval harness with fixed budget
-bash .deepresearch/eval.sh ${BUDGET} ${TARGET_FILE}
-# Output: metric: <new_value>
-
-# 5. Score + Decide
-PREV_BEST=<branch_best>
-NEW=<new_value>
-# Compare using metric_direction from config.json
-
-# 6a. IMPROVED → Keep
-git add ${TARGET_FILE}
-git commit -m "deepresearch #7: ${CATEGORY} — ${DESCRIPTION} (${METRIC}=${NEW})"
-
-# 7. Update strategy state
-python strategy.py update '{"id":7,"category":"...","branch":"branch-1","metric":${NEW},"previous_best":${PREV_BEST},"improvement_pct":...,"status":"kept","hypothesis":"...","mutation_description":"...","timestamp":"..."}'
-# Output: [#7 | branch-1 | architecture | T=0.380] <metric> ✓ kept (+X.XX%)
-
-# 8. → Loop back to step 1 for experiment #8
 ```
+# ─── 0. CHECK CURRICULUM ───
+python -m engine.level3 curriculum
+# → Stage 2: Performance — p99_latency_ms: 142 / target 100 ← CURRENT
+#   Strategy: types=['structural_addition','parametric'], T=0.5
 
-If the experiment had FAILED (new metric worse than previous best):
-```bash
-# Annealing check: P = exp(-|delta| / T)
-# Example: P = exp(-|0.993-1.002| / 0.38) = exp(-0.024) = 0.976
-# Roll random [0,1]. If roll < P → ACCEPT WORSE (annealing escape)
-# If roll ≥ P → REJECT, revert:
-git reset --hard HEAD~1
-python strategy.py update '{"id":7,...,"status":"reverted",...}'
-# Output: [#7 | branch-1 | architecture | T=0.380] <metric> ✗ reverted (-X.XX%)
+# ─── 1. STRATEGY ENGINE ───
+python strategy.py select
+# → {"category": "performance", "branch": "branch-1", "temperature": 0.51}
+
+# ─── 2. R1: DEEP READ ───
+# Agent reads src/server.py, src/db.py, reviews last 5 experiments.
+# "Request handling: 200ms total. Profiling shows 142ms in db.py:query().
+# Each request opens a new PostgreSQL connection (TCP + TLS handshake).
+# This is the bottleneck — not the application logic (58ms)."
+
+# ─── 3. KNOWLEDGE CHECK ───
+# Agent checks technique library:
+python -m engine.level3 techniques
+# → [0.80] connection_pooling: Reuse DB connections (untried)
+#   Source: FastAPI Deployment Guide
+#   Evidence: Benchmarks show 3x throughput
+#   Applicable when: DB calls are the bottleneck ← MATCHES
+
+# ─── 4. R2: HYPOTHESIS (knowledge-backed) ───
+# "Bottleneck: DB connection overhead (142ms per request, from R1).
+# Theory: Each request creates a new TCP+TLS connection. The FastAPI
+# Deployment Guide (source #1) documents that connection pooling
+# reduces this to near-zero. Benchmarks show 3x throughput.
+# Experiment: Add sqlalchemy connection pool (pool_size=20).
+# Prediction: p99 drops from 142ms to ~60-80ms.
+# Connects to: exp #3 confirmed DB is the bottleneck (profiling).
+# Risk: pool exhaustion under load → add max_overflow=10.
+# Confidence: high — profiling data + external benchmarks agree."
+
+# ─── 5. MUTATE (Level 2 structural_addition) ───
+# Agent uses MutationManager for safety:
+#   proposal = mm.propose("structural_addition", ["src/db.py"],
+#       description="Add connection pool with pool_size=20",
+#       hypothesis="DB connections are bottleneck, pooling reduces to near-zero")
+#   # Agent writes the code (adds ConnectionPool class, integrates into query())
+#   result = mm.execute(proposal)  # pre-test → apply → post-test → auto-revert if broken
+
+# ─── 6. EXECUTE EVAL ───
+bash .deepresearch/eval.sh
+# → metric: 85  (was: 142)
+
+# ─── 7. SCORE + DECIDE ───
+# 85 < 142 (lower is better) → KEPT (+40.1%)
+git add src/db.py && git commit -m "deepresearch #7: structural_addition — connection pooling (p99=85ms)"
+
+# ─── 8. R3: REFLECTION ───
+# "Predicted 60-80ms, got 85ms. Theory confirmed but slightly
+# underperformed — likely because pool_size=20 is suboptimal for our
+# load pattern. Bottleneck SHIFTED: DB is now 85ms but serialization
+# is 58ms (from profiling). Next: try orjson for faster JSON encoding
+# (parametric change, T=0.51 supports moderate change).
+# This experiment DEPENDS ON nothing — connection pooling is independent."
+ka.record_result("connection_pooling", "worked: p99 from 142ms to 85ms")
+
+# ─── 9. LOG ───
+python strategy.py update '{"id":7,"category":"performance","branch":"branch-1",
+  "mutation_type":"structural_addition","metric":85,"previous_best":142,
+  "improvement_pct":40.1,"status":"kept","hypothesis":"Connection pooling...",
+  "reflection":"Theory confirmed, bottleneck shifted to serialization",
+  "depends_on":[]}'
+
+# ─── 10. CURRICULUM CHECK ───
+python -m engine.level3 curriculum
+# → Stage 2: Performance — p99_latency_ms: 85 / target 100 ✅ COMPLETE!
+# → Advanced to Stage 3: Load handling — max_concurrent: ? / 1000
+
+# ─── LOOP → experiment #8 starts at step 0
 ```
 
 ---
