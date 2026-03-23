@@ -26,6 +26,20 @@ four layers of intelligence:
 3. **Persistent Memory** — Knowledge survives across sessions and domains
 4. **Research Reports** — Auto-generated analysis of findings
 
+**Navigation** (for agents parsing this file):
+- **Phase 0** — Setup (config, eval harness templates, baseline)
+- **Phase 1** — Core Loop (select → hypothesize → mutate → execute → score → log)
+- **Phase 1 Walkthrough** — End-to-end example with exact commands
+- **Phase 2** — Strategy Engine (momentum, plateau detection, regression, restarts)
+- **Phase 3** — Persistent Memory (knowledge.json schema, update protocol)
+- **Phase 4** — Multi-Agent (parallel architecture, orchestration)
+- **Phase 5** — Research Reports (templates, auto-generation triggers)
+- **Domain Configurations** — ML, Code, Prompt, Game, Document presets
+- **Stopping Conditions** — When and how to end
+- **Error Recovery** — Validation, corruption repair, backups, safety
+- **Edge Cases** — NaN, conflicts, empty resume, timeouts
+- **Scaling** — 100+ experiments, log rotation, convergence detection
+
 The human's job: define what "better" means, set constraints, write `research.md`.
 The agent's job: everything else.
 
@@ -72,6 +86,63 @@ LLM judge score 0-10 (higher), composite weighted score (higher).
 **Evaluation harness:** How to compute the metric. This is IMMUTABLE during the
 loop. Can be: a script, a test suite, an LLM-as-judge prompt, a benchmark.
 Write it to `.deepresearch/eval.sh` or `.deepresearch/eval.py`.
+
+Use one of these ready-made templates:
+
+**Template A — Script metric (ML training, code benchmarks):**
+```bash
+#!/bin/bash
+# .deepresearch/eval.sh — extract a single number from a script run
+set -e
+BUDGET="${1:-300}"
+TARGET="${2:-train.py}"
+LOG=".deepresearch/run.log"
+timeout "${BUDGET}s" uv run "$TARGET" > "$LOG" 2>&1 || true
+METRIC=$(grep "^val_bpb:\|^score:\|^result:" "$LOG" | tail -1 | awk '{print $2}')
+if [ -z "$METRIC" ]; then
+  echo "metric: CRASHED"
+  tail -50 "$LOG"
+  exit 1
+fi
+echo "metric: $METRIC"
+```
+
+**Template B — LLM-as-judge (prompt engineering, document quality):**
+```bash
+#!/bin/bash
+# .deepresearch/eval.sh — score an artifact using Claude as judge
+set -e
+ARTIFACT="$1"
+CONTENT=$(cat "$ARTIFACT")
+RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -d "$(jq -n --arg c "$CONTENT" '{
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 200,
+    messages: [{role: "user", content: ("Score this 0-10 on quality. Respond with ONLY a JSON: {\"score\": N, \"reason\": \"...\"}\n\n" + $c)}]
+  }')")
+SCORE=$(echo "$RESPONSE" | jq -r '.content[0].text' | jq -r '.score')
+echo "metric: $SCORE"
+```
+
+**Template C — Test suite (code optimization):**
+```bash
+#!/bin/bash
+# .deepresearch/eval.sh — run tests and measure pass rate + performance
+set -e
+RESULTS=$(python -m pytest tests/ --tb=no -q 2>&1)
+PASSED=$(echo "$RESULTS" | grep -oP '\d+(?= passed)')
+TOTAL=$(echo "$RESULTS" | grep -oP '\d+(?= passed)' | head -1)
+# Benchmark
+START=$(date +%s%N)
+python benchmark.py > /dev/null 2>&1
+END=$(date +%s%N)
+MS=$(( (END - START) / 1000000 ))
+echo "metric: $MS"
+echo "tests_passed: $PASSED"
+```
 
 **Budget per experiment:** Fixed time or resource budget. Every experiment gets
 exactly the same budget so results are comparable. Default: 5 minutes.
@@ -349,6 +420,57 @@ a particularly good random exploration), decide which branch to replace:
 - Replace the worst-performing branch
 - If all branches are within 1% of each other, replace the OLDEST
   (stale branches are likely stuck in a local optimum)
+
+---
+
+### End-to-End Walkthrough — One Full Experiment
+
+This shows exactly what happens in experiment #7 of an ML training session:
+
+```bash
+# 1. Strategy Engine selects parameters
+python strategy.py select
+# Output: {"category": "architecture", "branch": "branch-1", "temperature": 0.38, "experiment_number": 7}
+
+# 2. Agent reads current best on branch-1 and forms hypothesis
+git checkout deepresearch/branch-1
+cat train.py | head -50  # Read current architecture params
+cat .deepresearch/experiments.jsonl | tail -5  # Review recent experiments
+# Hypothesis: "DEPTH=8→10 should improve val_bpb — experiments #3 and #5
+# both improved with depth increases. Temperature 0.38 supports moderate boldness."
+
+# 3. Mutate: make ONE change
+sed -i 's/DEPTH = 8/DEPTH = 10/' train.py
+
+# 4. Execute with fixed budget
+bash .deepresearch/eval.sh 300 train.py
+# Output: metric: 0.981
+
+# 5. Score + Decide
+PREV_BEST=0.993  # branch-1's current best
+NEW=0.981         # this experiment
+# 0.981 < 0.993 → IMPROVED (lower is better)
+
+# 6a. IMPROVED → Keep
+git add train.py
+git commit -m "deepresearch #7: architecture — DEPTH 8→10 (val_bpb=0.981)"
+
+# 7. Update strategy state
+python strategy.py update '{"id":7,"category":"architecture","branch":"branch-1","metric":0.981,"previous_best":0.993,"improvement_pct":1.21,"status":"kept","hypothesis":"Increase DEPTH 8→10","mutation_description":"DEPTH=8 to DEPTH=10 in train.py","timestamp":"2026-03-23T03:14:22+01:00"}'
+# Output: [#7 | branch-1 | architecture | T=0.380] 0.981 ✓ kept (+1.21%)
+
+# 8. → Loop back to step 1 for experiment #8
+```
+
+If the experiment had FAILED (metric 1.002, worse than 0.993):
+```bash
+# Annealing check: P = exp(-|0.993-1.002| / 0.38) = exp(-0.024) = 0.976
+# Roll random: 0.43 < 0.976 → ACCEPT WORSE (simulated annealing escape)
+# OR if roll was 0.99 > 0.976 → REJECT, revert:
+git reset --hard HEAD~1
+python strategy.py update '{"id":7,"category":"architecture","branch":"branch-1","metric":1.002,"previous_best":0.993,"improvement_pct":-0.91,"status":"reverted","hypothesis":"Increase DEPTH 8→10","mutation_description":"DEPTH=8 to DEPTH=10","timestamp":"2026-03-23T03:14:22+01:00"}'
+# Output: [#7 | branch-1 | architecture | T=0.380] 1.002 ✗ reverted (-0.91%)
+```
 
 ---
 
@@ -679,12 +801,124 @@ When stopping for ANY reason:
 
 ## Error Recovery
 
+### State Validation (run at session start)
+
+Before any experiment, validate all persistent state. Corrupted files are
+the most common silent failure — catch them before they cascade.
+
+```bash
+# .deepresearch/validate.sh — run at session start
+#!/bin/bash
+set -e
+ERRORS=0
+
+# 1. Validate config.json
+python3 -c "
+import json, sys
+c = json.load(open('.deepresearch/config.json'))
+required = ['target_files','metric','metric_direction','budget_seconds','mutation_categories']
+missing = [k for k in required if k not in c]
+if missing: print(f'config.json missing keys: {missing}'); sys.exit(1)
+if c['metric_direction'] not in ('lower','higher'): print('invalid metric_direction'); sys.exit(1)
+" || { echo "✗ config.json corrupted"; ERRORS=$((ERRORS+1)); }
+
+# 2. Validate strategy-state.json
+python3 -c "
+import json, sys
+s = json.load(open('.deepresearch/strategy-state.json'))
+required = ['temperature','total_experiments','bandit_arms','population']
+missing = [k for k in required if k not in s]
+if missing: print(f'strategy-state.json missing: {missing}'); sys.exit(1)
+if not (0 <= s['temperature'] <= 2): print('temperature out of range'); sys.exit(1)
+" || { echo "✗ strategy-state.json corrupted"; ERRORS=$((ERRORS+1)); }
+
+# 3. Validate experiments.jsonl (each line must be valid JSON)
+if [ -f .deepresearch/experiments.jsonl ]; then
+  LINE=0
+  while IFS= read -r line; do
+    LINE=$((LINE+1))
+    echo "$line" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null || {
+      echo "✗ experiments.jsonl corrupted at line $LINE"
+      ERRORS=$((ERRORS+1))
+    }
+  done < .deepresearch/experiments.jsonl
+fi
+
+# 4. Validate knowledge.json
+python3 -c "
+import json
+k = json.load(open('.deepresearch/knowledge.json'))
+assert isinstance(k.get('patterns'), list)
+assert isinstance(k.get('anti_patterns'), list)
+" 2>/dev/null || { echo "✗ knowledge.json corrupted"; ERRORS=$((ERRORS+1)); }
+
+if [ $ERRORS -gt 0 ]; then
+  echo "⚠ $ERRORS validation errors — run repair"
+  exit 1
+else
+  echo "✓ All state files valid"
+fi
+```
+
+### Corruption Repair
+
+If validation fails, repair in this order:
+
+1. **config.json corrupted** → Rebuild from git history:
+   `git log --all --oneline -- .deepresearch/config.json` then restore,
+   or re-run `init.sh` with the same domain settings.
+
+2. **strategy-state.json corrupted** → Rebuild from experiments.jsonl:
+   ```bash
+   python3 -c "
+   import json
+   exps = [json.loads(l) for l in open('.deepresearch/experiments.jsonl') if l.strip()]
+   arms = {}
+   for e in exps:
+       cat = e.get('category','unknown')
+       if cat not in arms: arms[cat] = {'alpha':1,'beta':1,'trials':0}
+       arms[cat]['trials'] += 1
+       if e.get('status') in ('kept','accepted-worse'): arms[cat]['alpha'] += 1
+       else: arms[cat]['beta'] += 1
+   best = min((e['metric'] for e in exps if 'metric' in e and isinstance(e['metric'],(int,float))), default=None)
+   state = {'temperature':0.5,'total_experiments':len(exps),'bandit_arms':arms,'population':[],'best_metric':best,'baseline_metric':exps[0]['metric'] if exps else None}
+   json.dump(state, open('.deepresearch/strategy-state.json','w'), indent=2)
+   print('✓ Rebuilt strategy-state.json from experiment log')
+   "
+   ```
+
+3. **experiments.jsonl has bad lines** → Filter them out:
+   ```bash
+   python3 -c "
+   import json
+   good = []
+   for line in open('.deepresearch/experiments.jsonl'):
+       try: json.loads(line); good.append(line)
+       except: pass
+   open('.deepresearch/experiments.jsonl','w').writelines(good)
+   print(f'✓ Kept {len(good)} valid experiment records')
+   "
+   ```
+
+4. **knowledge.json corrupted** → Reset (knowledge is derived, not primary):
+   `echo '{"patterns":[],"anti_patterns":[],"domain_insights":[],"cross_domain":[]}' > .deepresearch/knowledge.json`
+
+### Backup Protocol
+
+After every 10 experiments, create a timestamped state backup:
+```bash
+BACKUP=".deepresearch/backups/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$BACKUP"
+cp .deepresearch/config.json .deepresearch/strategy-state.json .deepresearch/knowledge.json "$BACKUP/"
+cp .deepresearch/experiments.jsonl "$BACKUP/"
+```
+
 ### Crash Recovery
 If the agent itself crashes or the session is interrupted:
 - `.deepresearch/experiments.jsonl` is append-only — no data loss
 - `.deepresearch/strategy-state.json` is saved after every experiment
 - Population snapshots are git-managed — always recoverable
-- Next session: load all state and continue
+- Next session: run `validate.sh`, repair if needed, then continue
 
 ### Git Safety
 - Every experiment starts with `git stash` if there are uncommitted changes
@@ -697,63 +931,127 @@ If the agent itself crashes or the session is interrupted:
 - If rate-limited, pause and retry with exponential backoff
 - Reduce parallel agent count if hitting limits
 
+### Safety Guardrails
+
+**Eval harness integrity:** The agent MUST NOT modify any file used by the
+evaluation harness. Before each experiment, verify the eval harness checksum:
+```bash
+# At session start, record eval harness hash
+sha256sum .deepresearch/eval.sh > .deepresearch/.eval-hash
+# Before each experiment, verify
+sha256sum -c .deepresearch/.eval-hash --quiet || { echo "ABORT: eval harness modified"; exit 1; }
+```
+
+**Runaway process protection:** Always wrap execution with `timeout`:
+```bash
+timeout $((BUDGET + 60))s bash .deepresearch/eval.sh "$BUDGET" "$TARGET" > .deepresearch/run.log 2>&1
+# Extra 60s buffer for startup/shutdown. If it exceeds this, kill it.
+```
+
+**Resource limits:** For ML experiments, cap VRAM and prevent OOM cascades:
+```bash
+# Set max GPU memory (if applicable)
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+# Monitor: abort if disk fills up
+DISK_FREE=$(df -BM --output=avail . | tail -1 | tr -d ' M')
+[ "$DISK_FREE" -lt 500 ] && { echo "ABORT: <500MB disk free"; exit 1; }
+```
+
+**Token/secret safety:** If the eval harness uses API keys (LLM-as-judge):
+- Keys MUST come from environment variables, never hardcoded in any file
+- Never log API keys — grep and redact before writing to experiment logs
+- The `.deepresearch/` directory is `.gitignore`'d, but double-check before any push
+
+**Mutation scope enforcement:** The agent may ONLY modify files listed in
+`config.json → target_files`. Any attempt to edit other files is a bug.
+Before each git commit, verify: `git diff --name-only` shows only target files.
+
 ---
 
-## Quick Reference
+## Core Principles
 
 ```
-SETUP:
-  1. What artifact?      → Files being optimized
-  2. What metric?        → ONE number, direction clear
-  3. What harness?       → Immutable evaluation (NEVER modified)
-  4. What budget?        → Fixed per experiment
-  5. What population?    → K parallel branches (default 3)
-  6. What temperature?   → aggressive / moderate / conservative
-
-STRATEGY ENGINE:
-  • Bandit Selection    → Thompson sampling over mutation categories
-  • Temperature         → Simulated annealing (accept worse early, greedy late)
-  • Population          → Top-K branches, tournament selection, crossover
-
-CORE LOOP:
-  1. Select strategy   (bandit + temperature + branch)
-  2. Form hypothesis   (informed by history + knowledge base)
-  3. Mutate            (one focused change, magnitude ∝ temperature)
-  4. Execute           (fixed budget, redirect output)
-  5. Score + Decide    (improved? keep. worse? anneal or revert.)
-  6. Log everything    (experiments.jsonl — wins AND losses)
-  7. Update memory     (patterns, anti-patterns, knowledge)
-  8. → back to 1
-
-CHECKPOINTS:
-  • Every 5:  status update
-  • Every 10: crossover attempt
-  • Every 20: ablation analysis
-  • Every 25: progress report
-
-PRINCIPLES:
-  ✓ Mutate from BRANCH BEST, not from last attempt
-  ✓ ONE change per experiment
-  ✓ NEVER modify the evaluation harness
-  ✓ NEVER ask "should I continue?" — run autonomously
-  ✓ Log EVERYTHING — negative results are data
-  ✓ Use the knowledge base — don't repeat known failures
-  ✓ Temperature controls boldness — be bold early, precise late
-  ✓ Crossover > random restart > greedy refinement
-  ✓ Ablation keeps the branch clean — prune dead weight
+✓ Mutate from BRANCH BEST, not from last attempt
+✓ ONE change per experiment
+✓ NEVER modify the evaluation harness
+✓ NEVER ask "should I continue?" — run autonomously
+✓ Log EVERYTHING — negative results are data
+✓ Use the knowledge base — don't repeat known failures
+✓ Temperature controls boldness — be bold early, precise late
+✓ Crossover > random restart > greedy refinement
+✓ Ablation keeps the branch clean — prune dead weight
 ```
+
+---
+
+## Edge Cases
+
+**Resuming with zero experiments:** If `.deepresearch/experiments.jsonl` is
+empty but config exists, re-run baseline (Phase 0.3) before entering the loop.
+Don't assume the baseline exists — verify `baseline_metric` is set in state.
+
+**Single target file vs multiple:** If `target_files` has one entry, standard
+git diff/commit works. For multiple files, ensure ALL target files are staged
+together — partial commits create inconsistent states. Use:
+```bash
+git add ${TARGET_FILES[@]} && git commit -m "..."
+```
+
+**Conflicting branches after crossover:** If merging two branches produces
+git conflicts, do NOT attempt auto-resolution. Instead: apply each branch's
+changes manually by reading both diffs, combining compatible changes, and
+skipping incompatible ones. Test the result as a new experiment.
+
+**Population size 1:** Degrades gracefully to standard autoresearch behavior.
+No crossover, no tournament selection. Bandit + annealing still work.
+
+**Metric returns NaN/Inf:** Treat as a crash. Revert and log:
+```bash
+if echo "$METRIC" | grep -qE 'nan|inf|NaN|Inf'; then
+  echo "metric: CRASHED (NaN/Inf)"
+  # revert
+fi
+```
+
+**Eval harness slower than budget:** If eval takes longer than `budget_seconds`
+(startup overhead, large models), the `timeout` wrapper kills it. Log as crashed
+with note "timeout exceeded." If 3+ consecutive timeouts, the agent should
+reduce model/data size in its next mutation.
+
+---
+
+## Scaling to 100+ Experiments
+
+**Log rotation:** `experiments.jsonl` grows ~500 bytes per experiment. At 1000+
+experiments, reading the full log each iteration slows context loading. Solution:
+keep a rolling summary of the last 50 experiments in memory, use `tail -50` on
+the full log, and consult the full log only for regression analysis (every 20
+experiments).
+
+**Knowledge base pruning:** After 500+ experiments, patterns and anti-patterns
+accumulate. Prune entries with `confidence < 0.3` or `evidence_count < 2`.
+
+**Branch cleanup:** Dead branches (replaced in population management) should be
+deleted after 50 experiments: `git branch -D deepresearch/dead-branch-name`.
+Keep only active population branches + main.
+
+**Session handoff for multi-day runs:** If running across multiple days/sessions,
+each session's report serves as context for the next. The agent should read the
+most recent report in `.deepresearch/reports/` at session start and use its
+"Recommendations" section to seed the first hypothesis.
+
+**Diminishing returns curve:** Track cumulative improvement per experiment.
+If the last 30 experiments averaged <0.05% improvement per kept experiment,
+the optimization is near convergence. Report this and suggest either:
+(a) a different metric, (b) a larger search space, or (c) declaring victory.
 
 ---
 
 ## Self-Improvement
 
-This skill can be optimized using its own loop:
-- **Target:** This SKILL.md
-- **Metric:** Composite score across 3+ test optimization tasks
-- **Eval:** Run DeepResearch on a prompt, a code file, and a config.
-  Score how well the loop performs (improvement achieved / experiments needed).
-
-The meta-loop: the research engine improving its own research methodology.
+This skill can be optimized using its own loop — target this SKILL.md,
+score via composite quality across 3+ test optimization tasks from different
+domains. The meta-loop: the research engine improving its own methodology.
 
 ---
 
