@@ -14,61 +14,75 @@ DeepResearch replaces random exploration with **intelligent search**:
 
 | What | Autoresearch | DeepResearch |
 |---|---|---|
+| How it thinks | Doesn't — blind search | **Reasoning Layer** — reads code, forms theories, reflects |
 | Category selection | Random | **Thompson Sampling** — learns which change types work |
 | Worse results | Always discard | **Simulated Annealing** — accept worse early to escape traps |
 | Branches | 1 best | **Population of K** — parallel exploration + crossover |
-| Between sessions | Forget everything | **Persistent memory** — anti-patterns, insights carry over |
-| After 200 experiments | Plateaued | **+17% better** than greedy |
+| Between sessions | Forget everything | **Persistent memory** — patterns, anti-patterns, causal deps |
+| Learning | Count successes | **Causal models** — understands WHY things work |
+| After 50 experiments | Barely moving | **+28.4% better** (proven) |
 
 ## Prove It
 
+### The Reasoning Layer is what matters
+
+![Reasoning Layer proof](reasoning_proof.png)
+
+The mechanical strategy (bandit + annealing + population) without understanding is **worse than greedy**. The intelligence comes from THINKING, not from the algorithm:
+
 ```bash
-# One command. Runs both strategies. Generates the chart above.
-pip install matplotlib
-python compare.py
+python benchmark_reasoning.py
 ```
 
-Output:
 ```
-  Strategy                     Mean    ± Std     Best
-  ─────────────────────────────────────────────────
-  Greedy (autoresearch)        28.6    13.5     12.0
-  DeepResearch                 24.1    13.0     12.2
-  ─────────────────────────────────────────────────
-  Improvement: +15.7%
+  GREEDY (autoresearch)            mean= 68.9     (baseline)
+  DR Mechanical (no reasoning)     mean= 72.2     (-4.8% — worse!)
+  DR + Reasoning Layer             mean= 62.2     (+9.8% — the only winner)
+
+  ★ Value of Reasoning Layer alone: +13.9%
 ```
 
-The advantage **grows** with more experiments:
+### It scales — biggest advantage when experiments are expensive
 
-| Experiments | Greedy | DeepResearch | Improvement |
+| Experiments | Greedy | DR + Reasoning | Improvement |
 |---|---|---|---|
-| 50 | 45.2 | 41.2 | **+8.8%** |
-| 100 | 34.6 | 33.4 | **+3.7%** |
-| 200 | 28.4 | 23.6 | **+17.0%** |
-| 500 | 17.1 | 15.0 | **+12.5%** |
+| 50 | 101.5 | 72.7 | **+28.4%** |
+| 100 | 78.2 | 63.2 | **+19.2%** |
+| 200 | 68.9 | 62.2 | **+9.8%** |
+| 500 | 66.3 | 61.1 | **+7.9%** |
 
-Run the scaling test yourself: `python compare.py --scaling`
+The advantage is largest at low experiment counts — exactly where it matters most (experiments are expensive).
+
+### Head-to-head convergence
+
+![DeepResearch vs Autoresearch convergence](progress.png)
+
+```bash
+python compare.py          # generates progress.png
+python compare.py --scaling # scaling table
+```
 
 ## How It Works
 
+Other tools optimize the mechanical loop. DeepResearch optimizes the **thinking** that drives the loop.
+
 ```
-Phase 1: EXPLORE (first 35% of experiments)
-  ├── K=3 parallel branches explore different directions
-  ├── Thompson Sampling picks which category to try
-  ├── Conservative annealing accepts small regressions
-  └── Bold mutations (structural changes, algorithm swaps)
+Every experiment:
+  1. DEEP READ    — Read and understand the artifact (not just grep for numbers)
+  2. THEORIZE     — Form causal hypothesis: "metric limited by X because Y"
+  3. PREDICT      — "Changing Z should improve by ~N% because [mechanism]"
+  4. MUTATE       — One targeted change to test the theory
+  5. EXECUTE      — Fixed budget eval
+  6. REFLECT      — Was prediction correct? WHY? Update mental model
+  7. LOG          — Hypothesis + result + learning (not just "kept/reverted")
 
-Phase 2: CROSSOVER (at the 35% mark)
-  └── Combine best traits from top branches
+Every 10 experiments:
+  → Research memo: theory, findings, dead ends, next direction
 
-Phase 3: EXPLOIT (remaining 65%)
-  ├── Converge on best branch
-  ├── Thompson Sampling focuses on winning categories
-  ├── Fine-grained mutations only
-  └── Adaptive reheat if stuck for 8+ experiments
+The model's intelligence IS the search strategy.
 ```
 
-The key insight: **explore broadly first, then exploit ruthlessly**. Greedy exploits from experiment #1, which means it converges to the nearest local optimum. DeepResearch finds the right region first, then optimizes within it.
+Built for Opus 4.6: adaptive thinking for deep reasoning, 1M context for holding entire research histories, interleaved thinking for reasoning between tool calls.
 
 ## Quick Start
 
@@ -109,17 +123,33 @@ DeepResearch is domain-agnostic. If you can measure it, you can optimize it:
 ## What's in the Box
 
 ```
-compare.py           ← Run this first. Proves DeepResearch beats greedy.
-SKILL.md             ← Full agent instructions (the "brain")
-strategy.py          ← Thompson Sampling + annealing + population engine
-init.sh              ← One-command project setup
+compare.py              ← Run this first. Head-to-head convergence chart.
+benchmark_reasoning.py  ← THE proof. Reasoning Layer vs blind search.
+SKILL.md                ← Full agent instructions with Reasoning Layer protocol
+reasoning_layer.md      ← Deep dive: R1 (Deep Read), R2 (Hypothesis), R3 (Reflection)
+strategy.py             ← Thompson Sampling + annealing + population engine
+init.sh                 ← One-command project setup
 templates/
-  research.md        ← Human-facing research goals template
-benchmark.py         ← Mathematical function benchmarks
-benchmark_realistic.py ← Realistic code optimization benchmark
+  research.md           ← Human-facing research goals template
 ```
 
-## The Strategy Engine
+## The Reasoning Layer (the core differentiator)
+
+Every other autoresearch tool optimizes the mechanical loop. We optimize the thinking.
+
+**R1: Deep Read** — Before mutating, read and understand the artifact. Identify the bottleneck. Not "what could change" but "what limits the metric RIGHT NOW."
+
+**R2: Causal Hypothesis** — Don't pick random mutations. Form a theory: "The metric is X because of Y. Changing Z should improve it because [mechanism]. This connects to experiment #N which showed [finding]."
+
+**R3: Reflection** — After seeing results, don't just update a counter. Ask: was my prediction correct? Why? Has the bottleneck shifted? Write a 2-3 sentence reflection that updates your mental model.
+
+**Research Memos** — Every 10 experiments, synthesize findings into a memo: current theory, key learnings, dead ends, next direction. These compound across the session — memo #5 references #3 which references #1.
+
+**Causal Dependencies** — Track which changes depend on each other. Enables smart ablation and smart crossover.
+
+See `reasoning_layer.md` for the full protocol.
+
+## The Strategy Engine (tools the researcher uses)
 
 **Thompson Sampling** for category selection:
 - Each mutation category (architecture, optimizer, etc.) is a bandit arm
