@@ -89,11 +89,11 @@ autoresearch — DeepResearch has memory.
 Work with the human to establish these BEFORE the loop starts:
 
 **Target artifact(s):** What file(s) get modified? Can be one file (like
-autoresearch's train.py) or a small set of related files. Fewer is better.
+a script or config) or a small set of related files. Fewer is better.
 
 **Primary metric:** ONE number. Direction must be clear (lower/higher = better).
-Examples: val_bpb (lower), test pass rate (higher), response latency ms (lower),
-LLM judge score 0-10 (higher), composite weighted score (higher).
+Examples: response latency ms (lower), test pass rate (higher), benchmark score
+(higher), LLM judge score 0-10 (higher), val_loss (lower), fairness index (higher).
 
 **Evaluation harness:** How to compute the metric. This is IMMUTABLE during the
 loop. Can be: a script, a test suite, an LLM-as-judge prompt, a benchmark.
@@ -101,16 +101,16 @@ Write it to `.deepresearch/eval.sh` or `.deepresearch/eval.py`.
 
 Use one of these ready-made templates:
 
-**Template A — Script metric (ML training, code benchmarks):**
+**Template A — Script metric (any script that outputs a number):**
 ```bash
 #!/bin/bash
 # .deepresearch/eval.sh — extract a single number from a script run
 set -e
 BUDGET="${1:-300}"
-TARGET="${2:-train.py}"
+TARGET="${2:-app.py}"
 LOG=".deepresearch/run.log"
-timeout "${BUDGET}s" uv run "$TARGET" > "$LOG" 2>&1 || true
-METRIC=$(grep "^val_bpb:\|^score:\|^result:" "$LOG" | tail -1 | awk '{print $2}')
+timeout "${BUDGET}s" python "$TARGET" > "$LOG" 2>&1 || true
+METRIC=$(grep "^metric:\|^score:\|^result:" "$LOG" | tail -1 | awk '{print $2}')
 if [ -z "$METRIC" ]; then
   echo "metric: CRASHED"
   tail -50 "$LOG"
@@ -272,11 +272,11 @@ Run the evaluation harness on the UNMODIFIED artifact. This is experiment #0.
 # Branch for baseline
 git checkout -b deepresearch/session-$(date +%Y%m%d)
 
-# Run eval (example for ML training)
-timeout ${BUDGET}s uv run train.py > .deepresearch/run.log 2>&1
+# Run eval
+bash .deepresearch/eval.sh > .deepresearch/run.log 2>&1
 
 # Extract metric
-BASELINE=$(grep "^val_bpb:" .deepresearch/run.log | awk '{print $2}')
+BASELINE=$(grep "^metric:" .deepresearch/run.log | awk '{print $2}')
 
 # Record
 echo '{"id":0,"timestamp":"'$(date -Iseconds)'","branch":"baseline","category":"baseline","hypothesis":"Unmodified baseline","metric":'$BASELINE',"status":"baseline","description":"Initial baseline measurement"}' >> .deepresearch/experiments.jsonl
@@ -622,6 +622,29 @@ async and pooling wasn't in the original plan."
 
 This is the heartbeat. Every experiment follows this exact protocol.
 
+**Unified decision flow (L1 through L3):**
+
+```
+1. CHECK CURRICULUM  → What stage am I in? What mutation strategy?
+                       (python -m engine.level3 curriculum)
+2. DEEP READ (R1)   → Understand the artifact. What's the bottleneck?
+3. DECIDE LEVEL     → Is the bottleneck a parameter (L1) or a missing
+                       capability (L2) or a missing component (L3)?
+4. FORM HYPOTHESIS  → Theory + prediction + confidence
+5. SELECT STRATEGY  → Bandit (python strategy.py select) tells WHICH category
+                       Curriculum tells WHICH mutation type
+6. MUTATE           → L1: change a value
+                       L2: use MutationManager (from engine.mutations)
+                       L3: use Orchestrator (from engine.autonomous)
+7. EXECUTE + SCORE  → eval.sh (fixed budget) → metric
+8. REFLECT (R3)     → Why? Update causal model
+9. LOG              → experiments.jsonl + bandit update + knowledge base
+```
+
+The Level 1 strategy engine (strategy.py) and Level 2-3 engine (engine/)
+work together: strategy.py decides WHICH category and HOW aggressively.
+The engine decides WHAT TYPE of mutation and enforces safety rails.
+
 ### 1.1 Select Strategy (Bandit + Temperature)
 
 Before each experiment, the Strategy Engine decides:
@@ -748,26 +771,29 @@ Make ONE focused change. Rules:
 - Small and testable. Don't combine unrelated changes.
 - The change must be reversible (git makes this trivial).
 - Stay within the selected mutation category.
-- Scale mutation magnitude with temperature using this guide:
+- Scale mutation type AND magnitude with temperature:
 
 ```
-T > 0.7  (hot)   → Structural changes. Swap algorithms, rewrite sections,
-                    change architecture.
-                    ML: replace optimizer (SGD→AdamW), change LR schedule
-                    Code: change data structure (list→hashmap), new algorithm
-                    Prompt: rewrite persona, reorganize all sections
-                    Game: redesign resource system, change combat formula
-T 0.3–0.7 (warm) → Parameter changes with moderate range.
-                    ML: learning rate 3e-4→1e-3, depth 8→12
-                    Code: buffer size 4K→16K, thread count 4→8
-                    Prompt: add 2 examples, tighten constraints
-                    Game: damage multiplier 1.0→1.5, XP curve exponent
-T < 0.3  (cold)  → Fine-tuning. Small nudges to known-good values.
-                    ML: learning rate 3e-4→2.5e-4, dropout 0.1→0.05
-                    Code: cache TTL 300→360, batch size 100→120
-                    Prompt: rephrase one sentence, adjust one example
-                    Game: spawn rate 1.0→1.05, gold per kill ±5%
+T > 0.7  (hot)   → Level 2 mutations. Add features, replace algorithms,
+                    restructure code. Use MutationManager:
+                    mm = MutationManager()
+                    proposal = mm.propose("structural_addition", ["src/app.py"],
+                        description="Add connection pooling",
+                        hypothesis="DB connections are the bottleneck")
+                    # Apply the change, then:
+                    result = mm.execute(proposal)  # tests before/after, auto-revert
+
+T 0.3–0.7 (warm) → Level 1-2 mix. Parameter changes + small structural additions.
+                    Moderate scope: change a value OR add a small helper function.
+
+T < 0.3  (cold)  → Level 1 only. Fine-tuning known-good parameters.
+                    Small nudges. No structural changes.
 ```
+
+**For Level 2+ mutations:** ALWAYS use the MutationManager safety rails.
+It snapshots files before mutation, runs tests before AND after, and
+auto-reverts if tests break. Direct file editing without safety rails
+is only acceptable for Level 1 parametric changes.
 
 ### 1.4 Execute
 
@@ -834,17 +860,19 @@ Append to `.deepresearch/experiments.jsonl`:
   "timestamp": "2026-03-23T03:14:22+01:00",
   "session": "session-20260323",
   "branch": "branch-1",
-  "category": "architecture",
-  "hypothesis": "Increasing depth from 8 to 10 layers should improve val_bpb because the model has more capacity for the fixed time budget",
-  "mutation_description": "Changed DEPTH=8 to DEPTH=10 in train.py",
-  "metric": 0.987,
-  "previous_best": 0.993,
-  "improvement_pct": 0.6,
+  "category": "performance",
+  "mutation_type": "structural_addition",
+  "hypothesis": "Adding connection pooling should reduce p99 latency because each request currently creates a new DB connection (measured 40ms overhead per request)",
+  "mutation_description": "Added ConnectionPool class to db.py, integrated into request handler",
+  "metric": 85,
+  "previous_best": 142,
+  "improvement_pct": 40.1,
   "status": "kept",
-  "temperature": 0.31,
+  "temperature": 0.51,
   "acceptance_probability": null,
-  "duration_seconds": 302,
-  "notes": "Third architecture change that improved. Depth seems to be the key lever."
+  "duration_seconds": 30,
+  "reflection": "Confirmed DB connections were the bottleneck. Latency dropped from 142ms to 85ms. Next bottleneck is likely serialization — profile shows 30ms in JSON encoding.",
+  "depends_on": []
 }
 ```
 
@@ -1128,11 +1156,11 @@ git commit -m "deepresearch: guided restart with top-3 changes from experiments 
 {
   "patterns": [
     {
-      "domain": "ml_training",
-      "category": "architecture",
-      "description": "Increasing depth improves val_bpb up to ~12 layers, then diminishes",
-      "confidence": 0.85,
-      "evidence_count": 7,
+      "domain": "code_optimization",
+      "category": "performance",
+      "description": "Adding connection pooling consistently reduces p99 latency by 30-50% when DB calls are the bottleneck",
+      "confidence": 0.9,
+      "evidence_count": 5,
       "first_seen": "2026-03-20",
       "last_confirmed": "2026-03-23"
     },
@@ -1148,18 +1176,11 @@ git commit -m "deepresearch: guided restart with top-3 changes from experiments 
   ],
   "anti_patterns": [
     {
-      "domain": "ml_training",
-      "category": "optimizer",
-      "description": "Pure SGD without momentum always regresses vs Muon+AdamW baseline",
-      "confidence": 0.95,
-      "evidence_count": 4
-    },
-    {
       "domain": "code_optimization",
       "category": "parallelism",
-      "description": "Adding threads to I/O-bound functions with GIL makes it slower, not faster",
-      "confidence": 0.9,
-      "evidence_count": 3
+      "description": "Adding threads to I/O-bound Python functions with GIL makes it slower, not faster. Use async instead.",
+      "confidence": 0.95,
+      "evidence_count": 4
     },
     {
       "domain": "game_balancing",
@@ -1171,10 +1192,10 @@ git commit -m "deepresearch: guided restart with top-3 changes from experiments 
   ],
   "domain_insights": [
     {
-      "domain": "ml_training",
-      "insight": "For 5-min budget on H100, model width matters more than depth beyond 8 layers",
+      "domain": "web_api",
+      "insight": "For APIs with mixed read/write load, caching + connection pooling together give 3x more improvement than either alone (synergy)",
       "source_session": "session-20260322",
-      "metric_impact": "2.3% improvement"
+      "metric_impact": "p99 from 300ms to 45ms"
     }
   ],
   "cross_domain": [
@@ -1456,6 +1477,75 @@ bash .deepresearch/eval.sh  # → metric: 6
 # Agent: "Read SKILL.md, start deepresearch on system_prompt.md"
 ```
 
+### Quick Start Example — Level 2 (Optimize an existing codebase)
+
+Use Level 2 when the code WORKS but is missing features that would improve it:
+
+```bash
+# 1. Init with curriculum
+python -m engine.level3 init --spec "Optimize API performance" --domain web_api
+
+# 2. Configure target files
+# Edit .deepresearch/config.json:
+#   target_files: ["src/"], test_command: "pytest tests/ -q",
+#   metric: "p99_latency_ms", metric_direction: "lower",
+#   mutation_levels: [1, 2]
+
+# 3. Run baseline
+bash .deepresearch/eval.sh  # → metric: 450 (ms)
+
+# 4. Discover improvement opportunities
+python -m engine.level3 discover
+# → Agent analyzes codebase for: caching, batching, connection pooling,
+#   async IO, error handling, input validation, dead code...
+
+# 5. Start the loop with Level 2 mutations enabled
+# Agent: "Read SKILL.md. Run deepresearch on src/. Use Level 2 mutations —
+#   you can ADD code (caching, pooling, etc.) not just tune parameters.
+#   Follow the curriculum stages: correctness first, then performance."
+
+# 6. Check curriculum progress
+python -m engine.level3 curriculum
+# → Stage 1: Correctness ✅ | Stage 2: Performance 🔶 (450ms → target <100ms)
+```
+
+### Quick Start Example — Level 3 (Build from specification)
+
+Use Level 3 when starting from a spec or when fundamental redesign is needed:
+
+```bash
+# 1. Init with spec
+python -m engine.level3 init \
+  --spec "Build a CLI tool that converts CSV to JSON with streaming, validation, and error recovery" \
+  --domain library
+
+# 2. Research phase (agent reads the spec, surveys existing tools)
+python -m engine.level3 next
+# → "Phase: research. Analyze the specification and answer: ..."
+# Agent researches, then: python -m engine.level3 research  (to see progress)
+
+# 3. Architecture phase (agent designs components)
+python -m engine.level3 next
+# → "Phase: architect. Design components with dependencies..."
+# Agent designs: Parser, Validator, Converter, StreamWriter, ErrorHandler
+
+# 4. Bootstrap (creates project structure with stubs)
+python -m engine.level3 bootstrap
+# → Creates src/*.py stubs, tests/*.py stubs, config files
+
+# 5. Build phase (agent implements each component using DeepResearch loop)
+python -m engine.level3 next
+# → "Phase: build. Implement 'Parser': parse CSV rows with streaming..."
+# Agent writes code, runs tests, iterates. Repeat for each component.
+
+# 6. Optimize phase (curriculum-driven optimization)
+python -m engine.level3 next
+# → "Phase: optimize. Current stage: Performance — target 10K rows/sec"
+
+# 7. Full status at any time
+python -m engine.level3 status
+```
+
 ---
 
 ## Stopping Conditions
@@ -1572,15 +1662,24 @@ better harness).
 ## Core Principles
 
 ```
-✓ Mutate from BRANCH BEST, not from last attempt
-✓ ONE change per experiment
-✓ NEVER modify the evaluation harness
-✓ NEVER ask "should I continue?" — run autonomously
-✓ Log EVERYTHING — negative results are data
-✓ Use the knowledge base — don't repeat known failures
-✓ Temperature controls boldness — be bold early, precise late
-✓ Crossover > random restart > greedy refinement
-✓ Ablation keeps the branch clean — prune dead weight
+Level 1 (always):
+  ✓ Mutate from BRANCH BEST, not from last attempt
+  ✓ ONE change per experiment
+  ✓ NEVER modify the evaluation harness
+  ✓ NEVER ask "should I continue?" — run autonomously
+  ✓ Log EVERYTHING — negative results are data
+  ✓ Use the knowledge base — don't repeat known failures
+  ✓ Temperature controls boldness — be bold early, precise late
+
+Level 2-3 (additional):
+  ✓ THINK before mutating (R1 → R2 → R3 every experiment)
+  ✓ Tests before AND after every structural mutation
+  ✓ Auto-revert if tests break — no exceptions
+  ✓ Curriculum stages are sequential — no skipping
+  ✓ Never regress a completed curriculum stage
+  ✓ Add tests WITH features, not after
+  ✓ Research before building (Level 3)
+  ✓ Build in dependency order — foundations first
 ```
 
 ---
@@ -1619,6 +1718,25 @@ fi
 with note "timeout exceeded." If 3+ consecutive timeouts, the agent should
 reduce model/data size in its next mutation.
 
+**Level 2 mutation breaks tests that were passing:** This is expected — the
+MutationManager auto-reverts. But if it keeps happening (3+ reverts in a row
+on the same feature addition), the agent should: (a) read the failing test to
+understand WHY, (b) try a smaller version of the same feature, or (c) add the
+feature's test FIRST, then implement to make it pass (TDD approach).
+
+**Level 3 research phase takes too long:** The agent should spend at most
+5-10 minutes on domain research. If it spirals into reading too many sources,
+set a hard limit: "Research 3 sources max, then move to architecture."
+
+**Curriculum stage regression:** If optimizing Stage 2 (performance) breaks
+Stage 1 (correctness), the curriculum runner flags it. The agent MUST fix
+the regression before continuing. Use: `python -m engine.level3 curriculum`
+to check for regressions.
+
+**Level 2 mutation creates circular dependency:** If adding Feature B depends
+on Feature A which depends on Feature B, don't try to add both at once.
+Instead: add Feature A with a stub interface for B, test, then add B.
+
 ### Troubleshooting — Common Failure Modes
 
 | Symptom | Cause | Fix |
@@ -1627,10 +1745,11 @@ reduce model/data size in its next mutation.
 | Metric oscillates ±0.1% forever | Measurement noise exceeds mutation impact | Increase eval budget (more test cases, longer runs) to reduce variance |
 | Every crossover crashes | Branches diverged structurally (incompatible changes) | Reset one branch to baseline + top-3, reduce divergence |
 | Strategy always picks same category | One arm has high α from early luck, others starved | Manually reheat: set temperature to 0.8 in strategy-state.json |
-| OOM crashes on every bold experiment | Model/buffer too large for hardware | Add a VRAM/memory check in eval.sh, reject before running |
 | Metric is CRASHED but no error in log | Eval script doesn't print "metric:" line | Ensure eval.sh always ends with `echo "metric: $VALUE"` |
-| Experiments run but knowledge.json empty | `strategy.py update` not called after each experiment | Must call `python strategy.py update '<json>'` after EVERY experiment |
-| Resume starts from scratch | `.deepresearch/` was gitignored correctly but worktree was cleaned | Check `.deepresearch/` persists outside git worktrees |
+| L2 mutation always breaks tests | Feature too complex for one mutation | Break into smaller sub-features, add tests for each separately |
+| Curriculum stuck on stage 1 | Tests are too strict or metric target unrealistic | Review targets. Lower the bar for early stages to unblock progress |
+| L3 architect phase produces too many components | Agent over-engineers | Cap at 5-7 components for v1. Add more in optimization phase |
+| `python -m engine.level3 next` shows wrong phase | Orchestrator state stale | Check `.deepresearch/orchestrator_state.json`, advance manually if stuck |
 
 ---
 
@@ -1663,9 +1782,15 @@ the optimization is near convergence. Report this and suggest either:
 
 ## Self-Improvement
 
-This skill can be optimized using its own loop — target this SKILL.md,
-score via composite quality across 3+ test optimization tasks from different
-domains. The meta-loop: the research engine improving its own methodology.
+This skill can be optimized using its own loop — target this SKILL.md and
+engine/*.py, score via composite quality across 3+ test optimization tasks
+from different domains. The meta-loop: the research engine improving its
+own methodology.
+
+For Level 2-3 self-improvement: use the FeatureDiscovery patterns to
+analyze the engine code itself. Are there missing error handlers? Could
+the curriculum system be more flexible? Is the mutation manager missing
+a mutation type? Apply Level 2 structural mutations to the engine.
 
 ---
 
@@ -1676,10 +1801,13 @@ domains. The meta-loop: the research engine improving its own methodology.
 When the human says "run deepresearch" or similar:
 
 1. Check if `.deepresearch/` exists
-   - YES: Run `bash .deepresearch/validate.sh`, load state, show last report summary, ask "Resume or fresh start?"
-   - NO: Run setup phase (0.1 through 0.3)
+   - YES: Load state, check `python -m engine.level3 status`, show progress, ask "Resume or fresh start?"
+   - NO: Determine the level needed:
+     - Human has existing code + metric → Level 1-2 (run `init.sh`)
+     - Human has a specification → Level 3 (run `python -m engine.level3 init`)
 2. After confirmation, begin the core loop — **never ask again**
 3. Print a one-line status after each experiment:
-   `[#42 | branch-1 | architecture | T=0.31] metric: 0.987 → 0.981 ✓ kept (+0.6%)`
-4. Use `grep`, `tail`, `head` — never `cat` on logs
-5. Git integration: see walkthrough in Phase 1, crossover in Phase 1.7, parallel in Phase 4
+   `[#42 | branch-1 | structural_addition | T=0.51] metric: 142ms → 85ms ✓ kept (+40.1%)`
+4. For Level 2+ mutations, always use the MutationManager safety rails
+5. Check curriculum progress every 10 experiments: `python -m engine.level3 curriculum`
+6. Use `grep`, `tail`, `head` — never `cat` on large logs
