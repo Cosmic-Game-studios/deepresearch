@@ -26,19 +26,20 @@ Built for Opus 4.6: leverages adaptive thinking for deep reasoning,
 for reasoning between tool calls. The model's intelligence IS the search
 strategy.
 
-Six layers:
+Seven layers:
 
 1. **Reasoning Layer** — Deep read → causal hypothesis → reflection (the core differentiator)
-2. **Level 2-3 Engine** — Generative mutations, curriculum learning, domain research (NEW)
+2. **Knowledge Acquisition** — External docs, papers, technique extraction, evidence-based hypotheses
 3. **Strategy Engine** — Bayesian bandit + simulated annealing as researcher tools
-4. **Population Search** — Multiple competing branches with smart crossover
-5. **Persistent Memory** — Knowledge, patterns, anti-patterns, causal dependencies
-6. **Research Reports** — Auto-generated memos and session reports
+4. **Generative Mutations** — Level 2 structural add/remove/replace with safety rails
+5. **Curriculum System** — Progressive goals with stage-specific strategies
+6. **Persistent Memory** — Knowledge base, patterns, anti-patterns, causal dependencies, techniques
+7. **Autonomous Pipeline** — Level 3: spec → research → architect → build → optimize → report
 
 **Navigation** (for agents parsing this file):
 - **Phase 0** — Setup (config, eval harness templates, baseline)
-- **Reasoning Layer** — Deep Read, Causal Hypothesis, Reflection, Memos (READ THIS FIRST)
-- **Level 2-3** — Generative Mutations, Curriculum, Domain Research (NEW)
+- **Reasoning Layer** — Deep Read + Knowledge Acquisition, Hypothesis, Reflection, Memos
+- **Level 2-3** — Generative Mutations, Curriculum, Domain Research Protocol
 - **Phase 1** — Core Loop (select → hypothesize → mutate → execute → score → log)
 - **Phase 1 Walkthrough** — End-to-end example with exact commands
 - **Phase 2** — Strategy Engine (momentum, plateau detection, regression, restarts)
@@ -172,7 +173,7 @@ PASSED=$(echo "$RESULTS" | grep -oP '\d+(?= passed)')
 TOTAL=$(echo "$RESULTS" | grep -oP '\d+(?= passed)' | head -1)
 # Benchmark
 START=$(date +%s%N)
-python benchmark.py > /dev/null 2>&1
+python benchmark_reasoning.py > /dev/null 2>python benchmark.py > /dev/null 2>&11
 END=$(date +%s%N)
 MS=$(( (END - START) / 1000000 ))
 echo "metric: $MS"

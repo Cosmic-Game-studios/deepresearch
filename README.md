@@ -142,14 +142,18 @@ DeepResearch is domain-agnostic. If you can measure it, you can optimize it:
 ## What's in the Box
 
 ```
-SKILL.md                ← Full agent instructions (Reasoning Layer + Level 2-3 protocols)
-engine/
-  level3.py             ← Level 2-3 engine: mutations, curriculum, safety rails, domain research
-reasoning_layer.md      ← Deep dive: R1, R2, R3 thinking protocols
-strategy.py             ← Thompson Sampling + annealing + population engine
-compare.py              ← Head-to-head benchmark vs greedy autoresearch
-benchmark_reasoning.py  ← Reasoning Layer proof (+14%)
-benchmark_level3.py     ← Level 1→3 proof (+189%)
+SKILL.md                ← Agent instructions: Reasoning Layer + Level 1-3 protocols
+engine/                 ← Level 2-3 engine (complete)
+  knowledge.py          ← Domain knowledge acquisition (search, read, extract, integrate)
+  mutations.py          ← Generative mutations with safety rails (6 mutation types)
+  curriculum.py         ← Progressive goals with stage-specific strategies
+  autonomous.py         ← Level 3 pipeline: research → architect → build → optimize
+  pipeline.py           ← Unified experiment runner bridging L1 ↔ L2-3
+  level3.py             ← CLI: init, status, next, knowledge, techniques, curriculum
+strategy.py             ← Level 1 engine: Thompson Sampling + annealing + population
+compare.py              ← Benchmark: DeepResearch vs greedy (+17%)
+benchmark_reasoning.py  ← Benchmark: Reasoning Layer proof (+14%)
+benchmark_level3.py     ← Benchmark: Level 3 vs Level 1 (+189%)
 init.sh                 ← One-command project setup
 ```
 
@@ -167,7 +171,33 @@ Every other autoresearch tool optimizes the mechanical loop. We optimize the thi
 
 **Causal Dependencies** — Track which changes depend on each other. Enables smart ablation and smart crossover.
 
-See `reasoning_layer.md` for the full protocol.
+## Knowledge Acquisition (the Level 1.5 bridge)
+
+Before experimenting, a good researcher reads the domain literature. DeepResearch automates this:
+
+```python
+from engine.knowledge import KnowledgeAcquisition
+
+ka = KnowledgeAcquisition(domain="web_api", spec="Optimize REST API", language="python")
+
+# 1. Generate targeted search queries
+queries = ka.generate_searches(bottleneck="latency")
+# → ["reducing web_api latency", "database connection pooling python", ...]
+
+# 2. Agent reads sources, extracts techniques
+ka.register_source(url, title, "documentation", relevance=0.9)
+ka.extract_technique(source_url=url, name="connection_pooling",
+    description="Reuse DB connections", expected_impact="30-50% reduction",
+    evidence="Benchmarks show 3x throughput", applicable_when="DB bottleneck")
+
+# 3. Knowledge-backed hypotheses (connects to R2)
+context = ka.hypothesis_context("connection_pooling", "DB latency 142ms")
+
+# 4. After experiment, record result
+ka.record_result("connection_pooling", "worked: p99 from 142ms to 85ms")
+```
+
+Search strategies for 7 domains (web_api, ml_training, cli_tool, game, library, data_pipeline, optimization) and 6 bottleneck types (latency, throughput, memory, accuracy, reliability, scalability). All knowledge persists in `.deepresearch/research/` across sessions.
 
 ## The Strategy Engine (tools the researcher uses)
 
@@ -199,39 +229,38 @@ DeepResearch today optimizes existing code by tuning parameters and making infor
 We're honest: Level 3 won't happen without a sufficiently capable foundation model. No amount of scaffolding makes a mediocre model into an autonomous engineer. But we believe the right scaffolding will be ready *when* the models are — and that the scaffolding itself is a hard research problem worth solving now.
 
 ```
-Level 1   ███████████████████░  Parameter tuning         ← DONE (v3, proven +14%)
-Level 1.5 █████████████░░░░░░░  Informed mutations       ← DONE (Reasoning Layer)
-Level 2   ████████████░░░░░░░░  Generative mutations     ← SCAFFOLDING BUILT (v4)
-Level 2.5 ██████░░░░░░░░░░░░░░  Curriculum learning      ← SCAFFOLDING BUILT (v4)
-Level 3   ████░░░░░░░░░░░░░░░░  Autonomous engineer      ← PROTOCOL DEFINED (v4)
+Level 1   ████████████████████  Parameter tuning         ← COMPLETE (v3, proven +14%)
+Level 1.5 ████████████████████  Informed mutations       ← COMPLETE (Reasoning Layer + Knowledge Acquisition)
+Level 2   ███████████████████░  Generative mutations     ← COMPLETE (mutations.py, safety rails, 6 types)
+Level 2.5 ███████████████████░  Curriculum learning      ← COMPLETE (curriculum.py, 6 domain templates)
+Level 3   ██████████████░░░░░░  Autonomous engineer      ← BUILT (autonomous.py, needs model validation)
 ```
 
 ### What each level means
 
 **Level 1 — Parameter tuning** (now): Change numbers. Learning rate 3e-4 → 1e-3, depth 8 → 12. The agent turns knobs on existing code. This is what autoresearch does. DeepResearch does it +14% better with the Reasoning Layer.
 
-**Level 1.5 — Smart mutations** (now, partial): The agent reads the code, understands the bottleneck, and makes informed changes. Not random — theory-driven. Our Reasoning Layer (R1/R2/R3) enables this. What's missing: reading external documentation and papers to acquire domain knowledge before experimenting.
+**Level 1.5 — Smart mutations** (complete): The agent reads the code, understands the bottleneck, and makes informed changes. The Reasoning Layer (R1/R2/R3) provides the thinking framework. The Knowledge Acquisition system (`engine/knowledge.py`) adds external domain knowledge — the agent searches documentation, papers, and articles, extracts techniques with evidence, and uses them to form knowledge-backed hypotheses. This is the bridge that makes Level 2 possible.
 
-**Level 2 — Generative mutations** (next target): The agent **writes new code**, not just changes values. "Add a caching layer." "Replace the linear search with a hash map." "Implement connection pooling." This is the jump from optimizer to engineer. It requires: structural mutations, a feature library per domain, multi-file awareness, and test safety rails. The models can already do this (Opus 4.6: 80.8% SWE-bench) — we need to build the scaffolding that directs this capability into a systematic research loop.
+**Level 2 — Generative mutations** (complete): The agent **writes new code**, not just changes values. 6 mutation types from parametric to architectural, with safety rails (test before/after, auto-revert, read-only protection). `engine/mutations.py` orchestrates the full lifecycle. `FeatureDiscovery` provides 16 universal improvement patterns the agent evaluates against any codebase.
 
-**Level 2.5 — Curriculum learning** (future): Instead of one flat metric, a sequence of progressively harder goals. Each stage builds on the previous. The agent can't skip to the hard problem — it must first build the fundamentals that make advanced techniques possible.
+**Level 2.5 — Curriculum learning** (complete): Instead of one flat metric, a sequence of progressively harder goals. `engine/curriculum.py` with 6 domain templates (web_api, ml_training, game, library, optimization, custom), stage-specific mutation strategies, regression detection, and automatic advancement. Each stage can focus on different mutation types.
 
-**Level 3 — Autonomous engineer** (long-term): Given only a specification, the agent researches the domain, designs an architecture, implements it from scratch, tests incrementally, and optimizes using everything from Levels 1–2.5. This is where a sufficiently advanced model + the right scaffolding could produce systems that compete with expert-built software in narrow domains.
+**Level 3 — Autonomous engineer** (built, needs model validation): Given only a specification, the agent researches the domain (`DomainResearcher`), designs the architecture (`Architect` with topological sort), creates the project structure (`Bootstrapper`), and builds components in dependency order using the DeepResearch experiment loop. The `Orchestrator` manages the 7-phase pipeline: research → architect → bootstrap → build → test → optimize → report.
 
 ### What we're building vs what we're waiting for
 
-| We build the scaffolding | We wait for the model |
+| We built (complete) | We still wait for the model |
 |---|---|
-| Experiment loop + Reasoning Layer | Stronger long-horizon planning |
-| Feature libraries per domain | Better code generation reliability |
-| Curriculum definitions | Larger context for full codebases |
-| Safety rails + test constraints | Self-correction without human review |
-| Cross-session persistent knowledge | True domain knowledge acquisition |
-| Multi-file mutation orchestration | Architectural reasoning at scale |
+| Reasoning Layer (R1/R2/R3) with concrete examples | Stronger long-horizon planning |
+| Knowledge Acquisition (search, read, extract, integrate) | Better code generation reliability (500+ correct lines) |
+| 6 mutation types with safety rails and auto-revert | Self-correction without human review |
+| Curriculum system with 6 domain templates | True architectural reasoning at scale |
+| Cross-session persistent knowledge + technique library | Reliable multi-file refactoring |
+| 7-phase Level 3 pipeline (research → build → optimize) | Model that can run the full pipeline autonomously |
+| 3 benchmarks proving each level's value | Real-world validation on production codebases |
 
-The scaffolding is the hard, unglamorous work: defining how experiments are structured, how knowledge persists, how safety is maintained, how curricula are defined. When a model arrives that can reliably write 500 lines of correct code in one shot, it will need exactly this scaffolding to know *what* to write, *why* to write it, and *how* to test it.
-
-Our bet: the scaffolding and the models will meet in the middle. We push from below (better experiment structure, deeper reasoning protocols, smarter search). The model providers push from above (stronger coding, longer context, better planning). Level 3 lives at the intersection.
+The scaffolding is built. Every level from 1 to 3 has working code, not just plans. What's missing is a model that can reliably run the Level 3 pipeline end-to-end without human intervention — and real-world validation that proves it works on production problems, not just synthetic benchmarks.
 
 ### Honest limits
 
