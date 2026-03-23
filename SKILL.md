@@ -26,17 +26,19 @@ Built for Opus 4.6: leverages adaptive thinking for deep reasoning,
 for reasoning between tool calls. The model's intelligence IS the search
 strategy.
 
-Five layers:
+Six layers:
 
-1. **Reasoning Layer** — Deep read → causal hypothesis → reflection (NEW — the core differentiator)
-2. **Strategy Engine** — Bayesian bandit + simulated annealing as researcher tools
-3. **Population Search** — Multiple competing branches with smart crossover
-4. **Persistent Memory** — Knowledge, patterns, anti-patterns, causal dependencies
-5. **Research Reports** — Auto-generated memos and session reports
+1. **Reasoning Layer** — Deep read → causal hypothesis → reflection (the core differentiator)
+2. **Level 2-3 Engine** — Generative mutations, curriculum learning, domain research (NEW)
+3. **Strategy Engine** — Bayesian bandit + simulated annealing as researcher tools
+4. **Population Search** — Multiple competing branches with smart crossover
+5. **Persistent Memory** — Knowledge, patterns, anti-patterns, causal dependencies
+6. **Research Reports** — Auto-generated memos and session reports
 
 **Navigation** (for agents parsing this file):
 - **Phase 0** — Setup (config, eval harness templates, baseline)
 - **Reasoning Layer** — Deep Read, Causal Hypothesis, Reflection, Memos (READ THIS FIRST)
+- **Level 2-3** — Generative Mutations, Curriculum, Domain Research (NEW)
 - **Phase 1** — Core Loop (select → hypothesize → mutate → execute → score → log)
 - **Phase 1 Walkthrough** — End-to-end example with exact commands
 - **Phase 2** — Strategy Engine (momentum, plateau detection, regression, restarts)
@@ -459,6 +461,160 @@ temperature and experiment phase:
   just need to find the right magnitude.
 - **T < 0.3 (fine-tuning):** Minimal hypothesis. "Nudging LR from 3e-4
   to 2.5e-4, expect <0.5% improvement." Don't overthink small changes.
+
+---
+
+## Level 2-3 — Generative Mutations (beyond parameter tuning)
+
+Level 1 changes values in existing code. Level 2+ changes the CODE ITSELF.
+This is the jump from optimizer to engineer. Benchmark proof: Level 3
+outperforms Level 1 by **+189%** on identical problems (see benchmark_level3.py).
+
+### Mutation Types
+
+The agent has 5 mutation types, unlocked progressively:
+
+| Type | Level | What it does | Example |
+|---|---|---|---|
+| `parametric` | 1 | Change a value | `DEPTH = 8 → 12` |
+| `structural_addition` | 2 | Add new code block/function/class | Add caching layer, add retry logic |
+| `structural_removal` | 2 | Remove dead code or unnecessary complexity | Simplify nested ifs to lookup table |
+| `structural_replacement` | 2 | Replace one implementation with a better one | Linear search → hash map |
+| `architectural` | 3 | Design and implement a new component from spec | Build a plugin system from research |
+
+**Safety rails for Level 2+ mutations:**
+1. All existing tests MUST pass before AND after the mutation
+2. New code must have at least one test
+3. Revert immediately if any test breaks
+4. Never modify read-only files (eval harness, test suite)
+5. git commit before mutation, `git reset --hard` on failure
+
+Configure in config.json:
+```json
+{
+  "test_command": "pytest tests/ -q",
+  "target_files": ["src/"],
+  "read_only_files": ["tests/", "eval.sh"],
+  "mutation_levels": [1, 2],
+  "hard_constraints": ["all tests pass", "no new dependencies without approval"]
+}
+```
+
+### Curriculum — Progressive Goals
+
+Instead of one flat metric, define a sequence of goals in
+`.deepresearch/curriculum.json`:
+
+```json
+{
+  "stages": [
+    {"name": "Correctness", "metric": "test_pass_rate", "target": 1.0, "direction": "higher"},
+    {"name": "Performance", "metric": "p99_latency_ms", "target": 100, "direction": "lower"},
+    {"name": "Scale", "metric": "max_concurrent", "target": 1000, "direction": "higher"}
+  ]
+}
+```
+
+The agent advances to the next stage only when the current target is met.
+Each stage can focus on different mutation types: Stage 1 might use
+structural additions (build the foundation), Stage 3 might use parametric
+tuning (optimize what's already built).
+
+Generate templates: `python engine/level3.py curriculum-init web_api`
+Available: `web_api`, `ml_training`, `library`, `game`, `custom`.
+
+### Domain Research Protocol (Level 3)
+
+Before writing code from a specification, the agent RESEARCHES the domain:
+
+1. **Understand the spec:** What is the input, output, constraints, metric?
+2. **Survey existing solutions:** Search for similar implementations, papers, tutorials
+3. **Identify the standard architecture:** Every domain has a "80% approach"
+4. **Plan the implementation order:** Dependencies first, optimization last
+5. **Define the curriculum:** Progressive goals from basic correctness to optimization
+6. **Begin the experiment loop:** With Level 2 mutations enabled
+
+Write research findings to `.deepresearch/domain_research.md` and the
+architecture plan to `.deepresearch/architecture_plan.md` before any code.
+
+### When to Use Which Level
+
+- **Level 1** — The code works but could be faster/better. Knobs exist to turn.
+- **Level 2** — The code is missing features. Adding capabilities would help more than tuning existing ones.
+- **Level 3** — Starting from a specification. No code exists yet, or the existing code needs fundamental redesign.
+
+The Reasoning Layer (R1 Deep Read) helps decide: if the bottleneck is
+a parameter (LR too high, cache too small), use Level 1. If the bottleneck
+is a missing capability (no caching at all, no error handling), use Level 2.
+
+### Multi-File Scope (Level 2+)
+
+Level 1 targets a single file. Level 2+ targets a **codebase**:
+
+```json
+{
+  "target_files": ["src/"],
+  "read_only_files": ["tests/", "eval.sh", "config/"],
+  "entry_point": "src/main.py",
+  "test_command": "pytest tests/ -q"
+}
+```
+
+The agent reads ALL files in `target_files` during R1 (Deep Read),
+but modifies only what's needed for each mutation. Multi-file mutations
+(e.g., adding a new class in `utils.py` and importing it in `main.py`)
+are a single experiment — atomic commit, atomic revert.
+
+### Architecture Planning (Level 3)
+
+Before coding from a specification, write `.deepresearch/architecture_plan.md`:
+
+```markdown
+## Components
+1. [Name] — [purpose] — [estimated complexity]
+
+## Dependency Order
+1. [Foundation] (no deps) → build first
+2. [Next] (depends on #1) → build second
+
+## Key Design Decisions
+- [Decision]: [option A] vs [option B], chose [X] because [reason]
+
+## Test Strategy per Component
+- [Component]: [how to verify it works in isolation]
+```
+
+The plan is itself an artifact that can be iterated. Experiment #1 might
+be "implement the plan." Experiment #2 might be "the plan was wrong about
+X, redesign the data flow." The Reasoning Layer treats the architecture
+as a hypothesis to be tested, not a fixed blueprint.
+
+Generate a plan template: `python engine/level3.py plan "your spec here"`
+
+### Level 3 Thinking Protocol
+
+At Level 3, the agent's thinking expands from "how to change this code"
+to "how to design this system." The Reasoning Layer adapts:
+
+**R1 at Level 3:** Read the specification, survey the domain, identify
+the standard architecture, and understand WHY that architecture exists.
+"Web servers use request/response + middleware because..."
+
+**R2 at Level 3:** Hypothesize about architecture, not parameters.
+"I think a producer-consumer pattern fits because the workload is
+IO-bound with bursty writes. This connects to the domain research
+which showed that similar systems use message queues."
+
+**R3 at Level 3:** Reflect on architectural decisions, not just metrics.
+"Adding the cache improved latency by 40%, but increased memory usage
+by 200%. The architecture plan assumed memory was cheap — need to
+revisit if we hit the memory constraint before the latency target."
+
+**Memos at Level 3:** Track architectural evolution, not just parameter
+tuning history. "Started with synchronous design. Experiment #15 showed
+async is 3x faster. Redesigned data flow. Experiment #20 added connection
+pooling on top of async — combined improvement: 5x. The synergy between
+async and pooling wasn't in the original plan."
 
 ---
 
