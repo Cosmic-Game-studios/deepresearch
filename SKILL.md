@@ -718,6 +718,46 @@ as a hypothesis to be tested, not a fixed blueprint.
 
 View the architecture plan: `python -m engine.level3 architect`
 
+### Level 3 Pipeline Commands
+
+```bash
+# Initialize a Level 3 project
+python -m engine.level3 init --spec "Build a REST API" --domain web_api
+
+# Run the full pipeline (research → architect → bootstrap → build → test → optimize → report)
+python -m engine.level3 run --max-experiments 200
+
+# Run a single phase
+python -m engine.level3 run-phase research
+python -m engine.level3 run-phase build
+
+# Validate if a phase can run (checks prerequisites)
+python -m engine.level3 validate build
+
+# Generate research report from collected data
+python -m engine.level3 report
+
+# Pipeline control
+python -m engine.level3 skip research    # Skip a phase
+python -m engine.level3 reset build      # Re-run a phase
+python -m engine.level3 status           # Full pipeline status
+```
+
+**Programmatic usage:**
+```python
+from engine.autonomous import Orchestrator
+
+orch = Orchestrator(spec="Build a REST API")
+orch.run()                          # Full pipeline
+orch.run_phase("build")             # Single phase
+orch.validate_phase("optimize")     # Check prerequisites
+orch.record_experiment("build", "Added caching layer")
+orch.generate_report()              # Report as string
+orch.save_report()                  # Save to .deepresearch/reports/
+orch.skip_phase("research")         # Skip a phase
+orch.reset_phase("test")            # Re-run a phase
+```
+
 ### Level 3 Thinking Protocol
 
 At Level 3, the agent's thinking expands from "how to change this code"
