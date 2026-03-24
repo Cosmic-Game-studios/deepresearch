@@ -39,7 +39,7 @@ Seven layers:
 **Navigation** (for agents parsing this file):
 - **Phase 0** — Setup (config, eval harness templates, baseline)
 - **Reasoning Layer** — Deep Read + Knowledge Acquisition, Hypothesis, Reflection, Memos
-- **Level 2-3** — Generative Mutations, Curriculum, Domain Research Protocol
+- **Level 2-3** — Generative Mutations, Curriculum, Domain Research Protocol, Architecture Planning, Multi-File Scope
 - **Phase 1** — Core Loop (select → hypothesize → mutate → execute → score → log)
 - **Phase 1 Walkthrough** — End-to-end example with exact commands
 - **Phase 2** — Strategy Engine (momentum, plateau detection, regression, restarts)
@@ -49,6 +49,7 @@ Seven layers:
 - **Domain Configurations** — ML, Code, Prompt, Game, Document presets
 - **Stopping Conditions** — When and how to end
 - **Error Recovery** — Validation, corruption repair, backups, safety
+- **Self-Improvement** — Meta-optimization config, eval criteria, safety rails
 
 The human's job: define what "better" means, set constraints, write `research.md`.
 The agent's job: everything else.
@@ -155,7 +156,7 @@ RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
   -H "x-api-key: $ANTHROPIC_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
   -d "$(jq -n --arg p "$JUDGE_PROMPT" '{
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-6",
     max_tokens: 200,
     messages: [{role: "user", content: $p}]
   }')")
@@ -170,10 +171,10 @@ echo "metric: $TOTAL"
 set -e
 RESULTS=$(python -m pytest tests/ --tb=no -q 2>&1)
 PASSED=$(echo "$RESULTS" | grep -oP '\d+(?= passed)')
-TOTAL=$(echo "$RESULTS" | grep -oP '\d+(?= passed)' | head -1)
+TOTAL=$(echo "$RESULTS" | grep -oP '\d+(?= (passed|failed))' | paste -sd+ | bc)
 # Benchmark
 START=$(date +%s%N)
-python benchmark_reasoning.py > /dev/null 2>python benchmark.py > /dev/null 2>&11
+python benchmark.py > /dev/null 2>&1
 END=$(date +%s%N)
 MS=$(( (END - START) / 1000000 ))
 echo "metric: $MS"
@@ -551,7 +552,7 @@ outperforms Level 1 by **+189%** on identical problems (see benchmark_level3.py)
 
 ### Mutation Types
 
-The agent has 5 mutation types, unlocked progressively:
+The agent has 6 mutation types, unlocked progressively:
 
 | Type | Level | What it does | Example |
 |---|---|---|---|
@@ -559,6 +560,7 @@ The agent has 5 mutation types, unlocked progressively:
 | `structural_addition` | 2 | Add new code block/function/class | Add caching layer, add retry logic |
 | `structural_removal` | 2 | Remove dead code or unnecessary complexity | Simplify nested ifs to lookup table |
 | `structural_replacement` | 2 | Replace one implementation with a better one | Linear search → hash map |
+| `integration` | 2 | Connect two existing components that weren't connected | Wire cache into request handler |
 | `architectural` | 3 | Design and implement a new component from spec | Build a plugin system from research |
 
 **Safety rails for Level 2+ mutations:**
@@ -1394,6 +1396,7 @@ Initialize with `bash init.sh --domain <name>` — sets target, metric, categori
 | `ml` | train.py | val_loss | lower | architecture, hyperparameters, optimizer, regularization, scheduling, efficiency |
 | `web_api` | src/ | p99_latency_ms | lower | algorithm, caching, connection_pooling, async, error_handling |
 | `code` | target.py | benchmark_time | lower | algorithm, memory, parallelism, io, architecture |
+| `optimization` | target.py | primary_metric | lower | algorithm, search_space, constraints, initialization, hybrid |
 | `prompt` | prompt.txt | judge_score | higher | structure, specificity, tone, examples, guardrails, persona |
 | `game` | src/ | composite | higher | economy, combat, progression, map_balance, ai_behavior |
 | `library` | src/ | benchmark_ops_sec | higher | algorithm, api_design, error_handling, data_structures |
@@ -1425,7 +1428,7 @@ for TEST in "Summarize this article" "Write a haiku" "Explain quantum computing"
     -H "Content-Type: application/json" -H "x-api-key: $ANTHROPIC_API_KEY" \
     -H "anthropic-version: 2023-06-01" \
     -d "$(jq -n --arg p "$PROMPT" --arg t "$TEST" '{
-      model:"claude-sonnet-4-20250514", max_tokens:500,
+      model:"claude-sonnet-4-6", max_tokens:500,
       system: $p,
       messages:[{role:"user",content:$t}]
     }')" | jq -r '.content[0].text' | head -c 2000 | \
@@ -1433,7 +1436,7 @@ for TEST in "Summarize this article" "Write a haiku" "Explain quantum computing"
     -H "Content-Type: application/json" -H "x-api-key: $ANTHROPIC_API_KEY" \
     -H "anthropic-version: 2023-06-01" \
     -d "$(jq -n --arg r "$(cat)" '{
-      model:"claude-sonnet-4-20250514", max_tokens:50,
+      model:"claude-sonnet-4-6", max_tokens:50,
       messages:[{role:"user",content:("Rate 0-10, respond ONLY with the number:\n\n" + $r)}]
     }')" | jq -r '.content[0].text' | grep -oP '^\d+')
   TOTAL=$((TOTAL + ${SCORE:-0}))
@@ -1758,6 +1761,41 @@ This skill can be optimized using its own loop — target this SKILL.md and
 engine/*.py, score via composite quality across 3+ test optimization tasks
 from different domains. The meta-loop: the research engine improving its
 own methodology.
+
+### Self-Improvement Config
+
+```json
+{
+  "target_files": ["SKILL.md", "engine/"],
+  "metric": "composite_quality",
+  "metric_direction": "higher",
+  "budget_seconds": 300,
+  "population_size": 1,
+  "temperature_schedule": "conservative",
+  "mutation_categories": ["clarity", "completeness", "correctness", "conciseness", "actionability"]
+}
+```
+
+### Eval Criteria (LLM-as-judge rubric)
+
+Score SKILL.md on these 5 criteria (0=fail, 1=pass each, total /5 × 10):
+
+1. **CLEAR** — Instructions are unambiguous. An agent can follow them without guessing.
+2. **COMPLETE** — All necessary steps, edge cases, and protocols are covered.
+3. **CORRECT** — No bugs in code templates, no stale references, no contradictions.
+4. **CONCISE** — No redundancy. Every section earns its place. No bloat.
+5. **ACTIONABLE** — Contains copy-paste-ready commands, configs, and code.
+
+Test across 3+ domains (e.g., ML training, web API, prompt engineering) to
+ensure changes don't overfit to one domain's perspective.
+
+### Safety Rails for Meta-Optimization
+
+- **Never delete the Self-Improvement section** — the skill must remain self-improvable.
+- **Preserve the 7-layer architecture** — individual layers can be improved, not removed.
+- **Keep all eval templates functional** — test bash syntax after any template change.
+- **Run `python test_integration.py`** after any engine/*.py change — all tests must pass.
+- **Don't collapse good/bad examples** — they're high-value teaching material.
 
 For Level 2-3 self-improvement: use the FeatureDiscovery patterns to
 analyze the engine code itself. Are there missing error handlers? Could
