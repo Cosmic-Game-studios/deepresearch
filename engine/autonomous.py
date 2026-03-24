@@ -452,7 +452,22 @@ class ReportGenerator:
         lines.append("## Phase Timeline")
         lines.append("")
         for h in state.get("phase_history", []):
-            lines.append(f"- **{h['phase'].upper()}** completed at {h['completed_at']}")
+            duration = ""
+            if h.get("started_at") and h.get("completed_at"):
+                try:
+                    start = datetime.fromisoformat(h["started_at"])
+                    end = datetime.fromisoformat(h["completed_at"])
+                    secs = (end - start).total_seconds()
+                    if secs >= 3600:
+                        duration = f" ({secs/3600:.1f}h)"
+                    elif secs >= 60:
+                        duration = f" ({secs/60:.0f}m)"
+                    else:
+                        duration = f" ({secs:.0f}s)"
+                except (ValueError, TypeError):
+                    pass
+            skipped = " [skipped]" if h.get("skipped") else ""
+            lines.append(f"- **{h['phase'].upper()}** completed at {h['completed_at']}{duration}{skipped}")
         current = state.get("current_phase", "?")
         if current != "complete":
             lines.append(f"- **{current.upper()}** (in progress)")
@@ -668,11 +683,13 @@ class Orchestrator:
     def _load_state(self) -> dict:
         if self.state_path.exists():
             return json.loads(self.state_path.read_text())
+        now = datetime.now().isoformat()
         return {
             "spec": self.spec,
             "current_phase": "research",
             "phase_history": [],
-            "started_at": datetime.now().isoformat(),
+            "phase_started_at": now,
+            "started_at": now,
             "total_experiments": 0,
         }
 
@@ -688,137 +705,42 @@ class Orchestrator:
         """Move to the next phase."""
         phase_names = [p["name"] for p in self.PHASES]
         idx = phase_names.index(self.current_phase)
-        self.state["phase_history"].append({
+        # Record completion with duration
+        started_at = self.state.get("phase_started_at")
+        entry = {
             "phase": self.current_phase,
             "completed_at": datetime.now().isoformat(),
-        })
+        }
+        if started_at:
+            entry["started_at"] = started_at
+        self.state["phase_history"].append(entry)
         if idx + 1 < len(phase_names):
             self.state["current_phase"] = phase_names[idx + 1]
         else:
             self.state["current_phase"] = "complete"
+        # Track start of new phase
+        self.state["phase_started_at"] = datetime.now().isoformat()
         self.save_state()
 
     def get_next_action(self) -> dict:
         """
         Get the next action the agent should take.
-        
-        Returns a structured instruction that tells the agent:
-        - What to do
-        - What inputs are available
-        - What output is expected
-        - What tools to use
+
+        Delegates to run_phase() internally — this is the simplified
+        interface that returns a flat action dict for the agent.
         """
-        phase = self.current_phase
+        result = self.run_phase()
 
-        if phase == "research":
-            self.researcher.load()
-            research_phase = self.researcher.get_current_phase()
-            if research_phase is None:
-                return {"action": "advance_phase",
-                        "message": "Research complete. Run orchestrator.advance_phase()"}
-            return {
-                "action": "research",
-                "phase": research_phase["phase"],
-                "prompt": research_phase["prompt"],
-                "spec": self.spec,
-                "tools": ["web_search", "read_files"],
-                "output": "Call researcher.complete_phase() with structured findings",
-            }
-
-        elif phase == "architect":
-            self.architect.load()
-            if not self.architect.components:
-                return {
-                    "action": "design_architecture",
-                    "prompt": (
-                        "Based on the domain research, design the system architecture.\n"
-                        "For each component, call architect.add_component() with:\n"
-                        "- name, purpose, files (list of file paths), depends_on (list of component names),\n"
-                        "  estimated_experiments (how many experiments to implement it)\n"
-                        "Then call architect.save() and orchestrator.advance_phase()"
-                    ),
-                    "research": self.researcher.knowledge,
-                    "tools": ["architect.add_component", "architect.save"],
-                }
+        # Normalize to the legacy action-based format
+        if result.get("status") == "complete":
+            if self.current_phase == "complete":
+                return {"action": "complete",
+                        "message": "All phases complete. The system is built and optimized."}
             return {"action": "advance_phase",
-                    "message": "Architecture defined. Run orchestrator.advance_phase()"}
+                    "message": result.get("message", f"Phase complete. Now on: {self.current_phase}")}
 
-        elif phase == "bootstrap":
-            return {
-                "action": "bootstrap_project",
-                "prompt": "Create the project structure from the architecture plan.",
-                "tools": ["Bootstrapper.bootstrap(architect)"],
-                "output": "Call Bootstrapper.bootstrap() then orchestrator.advance_phase()",
-            }
-
-        elif phase == "build":
-            self.architect.load()
-            next_comp = self.architect.next_component()
-            if next_comp is None:
-                return {"action": "advance_phase",
-                        "message": "All components implemented. Run orchestrator.advance_phase()"}
-            return {
-                "action": "implement_component",
-                "component": asdict(next_comp),
-                "prompt": (
-                    f"Implement component '{next_comp.name}': {next_comp.purpose}\n"
-                    f"Files to create/modify: {next_comp.files}\n"
-                    f"Dependencies (already implemented): {next_comp.depends_on}\n"
-                    f"Test file: {next_comp.test_file}\n\n"
-                    "Use the DeepResearch experiment loop:\n"
-                    "1. Deep Read the dependencies to understand the interfaces\n"
-                    "2. Form hypothesis about the best implementation approach\n"
-                    "3. Write the code (structural_addition mutation)\n"
-                    "4. Run tests to verify correctness\n"
-                    "5. Reflect on what worked and what didn't\n"
-                    "6. When tests pass, update component status to 'tested'"
-                ),
-                "mutation_type": "structural_addition",
-                "tools": ["mutations.propose", "mutations.execute", "architect.update_status"],
-            }
-
-        elif phase == "test":
-            return {
-                "action": "verify_correctness",
-                "prompt": (
-                    "Run the full test suite. If any tests fail, fix them using the\n"
-                    "DeepResearch experiment loop. This is curriculum Stage 1.\n"
-                    "Advance when all tests pass."
-                ),
-                "curriculum_stage": 1,
-                "tools": ["curriculum.check_advancement"],
-            }
-
-        elif phase == "optimize":
-            return {
-                "action": "optimize",
-                "prompt": (
-                    "Use the DeepResearch experiment loop to optimize the system.\n"
-                    "Check the curriculum for the current target metric.\n"
-                    "Use Level 1 (parametric) and Level 2 (structural) mutations.\n"
-                    "Advance when the curriculum stage target is met.\n"
-                    "Continue through all curriculum stages."
-                ),
-                "tools": ["curriculum.current_stage", "mutations", "strategy"],
-            }
-
-        elif phase == "report":
-            return {
-                "action": "generate_report",
-                "prompt": (
-                    "Generate a comprehensive research report:\n"
-                    "1. What was built (architecture overview)\n"
-                    "2. Key decisions and why (from research memos)\n"
-                    "3. What worked and what didn't (from experiment log)\n"
-                    "4. Performance metrics (from curriculum)\n"
-                    "5. Recommendations for future improvement"
-                ),
-                "tools": ["strategy.py report", "curriculum.progress_report"],
-            }
-
-        else:
-            return {"action": "complete",
-                    "message": "All phases complete. The system is built and optimized."}
+        # For needs_agent, pass through the structured result
+        return result
 
     def status_report(self) -> str:
         """Full status of the Level 3 pipeline."""
@@ -838,16 +760,51 @@ class Orchestrator:
                        "optimize": "⚡", "report": "📝"}
 
         for p in self.PHASES:
-            completed = any(h["phase"] == p["name"] for h in self.state.get("phase_history", []))
+            history_entry = next(
+                (h for h in self.state.get("phase_history", []) if h["phase"] == p["name"]),
+                None
+            )
             is_current = p["name"] == self.current_phase
-            if completed:
+            if history_entry:
                 icon = "✅"
+                # Show duration if available
+                duration = ""
+                if history_entry.get("started_at") and history_entry.get("completed_at"):
+                    try:
+                        start = datetime.fromisoformat(history_entry["started_at"])
+                        end = datetime.fromisoformat(history_entry["completed_at"])
+                        secs = (end - start).total_seconds()
+                        if secs >= 3600:
+                            duration = f" ({secs/3600:.1f}h)"
+                        elif secs >= 60:
+                            duration = f" ({secs/60:.0f}m)"
+                        else:
+                            duration = f" ({secs:.0f}s)"
+                    except (ValueError, TypeError):
+                        pass
+                skipped = " [skipped]" if history_entry.get("skipped") else ""
             elif is_current:
                 icon = "🔶"
+                duration = ""
+                skipped = ""
+                # Show elapsed time for current phase
+                started = self.state.get("phase_started_at")
+                if started:
+                    try:
+                        start = datetime.fromisoformat(started)
+                        elapsed = (datetime.now() - start).total_seconds()
+                        if elapsed >= 3600:
+                            duration = f" (running {elapsed/3600:.1f}h)"
+                        elif elapsed >= 60:
+                            duration = f" (running {elapsed/60:.0f}m)"
+                    except (ValueError, TypeError):
+                        pass
             else:
                 icon = "⬜"
+                duration = ""
+                skipped = ""
             name = p["name"].upper()
-            lines.append(f"  {icon} {name}: {p['description']}")
+            lines.append(f"  {icon} {name}: {p['description']}{duration}{skipped}")
 
         lines.append(f"\n{'═'*60}")
         return "\n".join(lines)
@@ -905,15 +862,19 @@ class Orchestrator:
         """
         Run the full Level 3 pipeline from current phase to completion.
 
-        This is the main entry point. It drives through all phases:
-        research → architect → bootstrap → build → test → optimize → report
+        Automatic phases (bootstrap, report) execute without stopping.
+        Agent-dependent phases (research, architect, build, test, optimize)
+        return with status "needs_agent" — the agent performs the work,
+        then calls run() again to continue. This mirrors Karpathy's
+        autoresearch loop: the system drives, the agent executes.
 
         Args:
-            max_experiments: Safety limit on total experiments (build + test + optimize).
+            max_experiments: Safety limit on total experiments.
 
         Returns:
-            {"status": "complete"/"stopped"/"error", "phases_completed": list,
-             "total_experiments": int, "report_path": str}
+            {"status": "complete"/"needs_agent"/"stopped"/"error",
+             "phases_completed": list, "total_experiments": int,
+             "current_action": dict (if needs_agent)}
         """
         result = {
             "status": "complete",
@@ -941,6 +902,7 @@ class Orchestrator:
                 break
 
             phase_result = self.run_phase(phase)
+
             if phase_result.get("status") == "error":
                 result["status"] = "error"
                 result["errors"].append(
@@ -948,8 +910,17 @@ class Orchestrator:
                 )
                 break
 
+            if phase_result.get("status") == "needs_agent":
+                # Agent must perform work before we can continue.
+                # Return the action so the caller (agent) knows what to do.
+                result["status"] = "needs_agent"
+                result["current_action"] = phase_result
+                break
+
+            # Phase completed automatically (bootstrap, report, etc.)
             result["phases_completed"].append(phase)
-            result["total_experiments"] = self.state.get("total_experiments", 0)
+            if phase_result.get("report_path"):
+                result["report_path"] = phase_result["report_path"]
 
         result["total_experiments"] = self.state.get("total_experiments", 0)
         return result
@@ -959,7 +930,7 @@ class Orchestrator:
         Execute a single phase of the pipeline.
 
         If phase_name is None, runs the current phase.
-        Returns {"status": "complete"/"error", "phase": str, ...}
+        Returns {"status": "complete"/"error"/"needs_agent", "phase": str, ...}
         """
         phase = phase_name or self.current_phase
 
@@ -972,6 +943,11 @@ class Orchestrator:
         if not validation["valid"]:
             return {"status": "error", "phase": phase,
                     "error": "; ".join(validation["reasons"])}
+
+        # Track phase start time if not already tracked
+        if not self.state.get("phase_started_at") or self.current_phase == phase:
+            self.state["phase_started_at"] = datetime.now().isoformat()
+            self.save_state()
 
         # Dispatch to phase handler
         handlers = {
@@ -997,39 +973,66 @@ class Orchestrator:
 
         return result
 
-    def _run_research(self) -> dict:
-        """Execute research phase — iterate through all 4 research sub-phases."""
-        self.researcher.load()
-        phases_done = []
+    def _get_pipeline_guidance(self) -> dict:
+        """
+        Get current ExperimentPipeline state for inclusion in agent instructions.
 
-        while True:
-            phase = self.researcher.get_current_phase()
-            if phase is None:
-                break
-            phases_done.append(phase["phase"])
-            # Return structured instruction for the agent
-            # The agent fills in the findings using researcher.complete_phase()
+        This wires the pipeline's bandit/temperature/curriculum state into
+        the Orchestrator's phase instructions so the agent has full context.
+        """
+        try:
+            from engine.pipeline import ExperimentPipeline
+            pipe = ExperimentPipeline(str(self.root))
             return {
-                "status": "needs_agent",
-                "action": "research",
-                "research_phase": phase["phase"],
-                "prompt": phase["prompt"],
-                "spec": self.spec or self.state.get("spec", ""),
-                "instruction": (
-                    f"Complete research phase '{phase['phase']}'.\n\n"
-                    f"{phase['prompt']}\n\n"
-                    f"After answering, call:\n"
-                    f"  orchestrator.researcher.complete_phase('{phase['phase']}', findings)\n"
-                    f"where findings is a dict with your answers.\n"
-                    f"Then call orchestrator.run_phase('research') again for the next phase."
-                ),
-                "phases_done": phases_done,
+                "temperature": pipe.temperature,
+                "experiment_count": pipe.experiment_count,
+                "best_metric": pipe.strategy_state.get("best_metric"),
+                "no_improvement_streak": pipe.strategy_state.get("no_improvement_streak", 0),
+                "bandit_arms": {
+                    name: {
+                        "trials": arm.get("trials", 0),
+                        "success_rate": (arm.get("alpha", 1) - 1) / max(arm.get("trials", 1), 1),
+                    }
+                    for name, arm in pipe.strategy_state.get("bandit_arms", {}).items()
+                },
+            }
+        except Exception:
+            return {}
+
+    def _run_research(self) -> dict:
+        """Execute research phase — return next sub-phase or complete."""
+        self.researcher.load()
+        phase = self.researcher.get_current_phase()
+
+        if phase is None:
+            return {
+                "status": "complete",
+                "report": self.researcher.generate_research_report(),
             }
 
+        # Count completed phases for progress
+        phase_to_key = {
+            "understand_spec": "spec_analysis", "survey_existing": "existing_solutions",
+            "identify_architecture": "architecture", "plan_testing": "test_strategy",
+        }
+        done = sum(1 for k in phase_to_key.values() if self.researcher.knowledge.get(k))
+        total = len(phase_to_key)
+
         return {
-            "status": "complete",
-            "phases_done": phases_done,
-            "report": self.researcher.generate_research_report(),
+            "status": "needs_agent",
+            "action": "research",
+            "research_phase": phase["phase"],
+            "research_progress": f"{done}/{total}",
+            "prompt": phase["prompt"],
+            "spec": self.spec or self.state.get("spec", ""),
+            "instruction": (
+                f"Complete research phase '{phase['phase']}' ({done+1}/{total}).\n\n"
+                f"{phase['prompt']}\n\n"
+                f"After answering, call:\n"
+                f"  orchestrator.researcher.complete_phase('{phase['phase']}', findings)\n"
+                f"where findings is a dict with your answers.\n"
+                f"Then call orchestrator.run_phase('research') again for the next phase."
+            ),
         }
 
     def _run_architect(self) -> dict:
@@ -1080,8 +1083,8 @@ class Orchestrator:
         Execute build phase — implement components in dependency order.
 
         Iterates through components. For each unbuilt component, returns
-        instructions for the agent. The agent implements it, then calls
-        run_phase('build') again for the next component.
+        instructions for the agent including ExperimentPipeline guidance.
+        The agent implements it, then calls run_phase('build') again.
         """
         self.architect.load()
         next_comp = self.architect.next_component()
@@ -1105,24 +1108,35 @@ class Orchestrator:
                 if c.status in ("implemented", "tested", "optimized")]
         progress = f"{len(done)}/{len(self.architect.components)}"
 
+        # Get pipeline experiment guidance if available
+        pipeline_guidance = self._get_pipeline_guidance()
+
         return {
             "status": "needs_agent",
             "action": "implement_component",
             "component": asdict(next_comp),
             "build_progress": progress,
             "build_order": build_order,
+            "pipeline": pipeline_guidance,
             "instruction": (
                 f"Implement component '{next_comp.name}': {next_comp.purpose}\n\n"
                 f"Progress: {progress} components built\n"
                 f"Files to create/modify: {next_comp.files}\n"
                 f"Dependencies (already implemented): {next_comp.depends_on}\n"
                 f"Test file: {next_comp.test_file}\n\n"
-                "Use the DeepResearch experiment loop:\n"
+                "Use the ExperimentPipeline for structured experiments:\n"
+                "  from engine.pipeline import ExperimentPipeline\n"
+                "  pipe = ExperimentPipeline()\n"
+                "  exp = pipe.next_experiment()  # get experiment instructions + temperature\n\n"
+                "Then follow the Reasoning Protocol:\n"
                 "1. R1 DEEP READ: Read the dependency files to understand interfaces\n"
                 "2. R2 HYPOTHESIZE: What is the best implementation approach?\n"
                 "3. R3 PREDICT: How many experiments will this take?\n"
                 "4. IMPLEMENT: Write the code (structural_addition mutation)\n"
+                "   proposal = pipe.mutations.propose('structural_addition', files, desc, hypothesis)\n"
+                "   safety = pipe.mutations.check_safety(proposal)\n"
                 "5. TEST: Run tests to verify correctness\n"
+                "   result = pipe.evaluate_and_decide(proposal, post_metrics)\n"
                 "6. REFLECT: What worked, what didn't?\n\n"
                 "When tests pass, call:\n"
                 f"  orchestrator.architect.update_status('{next_comp.name}', 'tested')\n"
@@ -1136,8 +1150,8 @@ class Orchestrator:
         """
         Execute test phase — verify all components pass tests.
 
-        This is curriculum Stage 1 (correctness). The agent runs the
-        full test suite and fixes any failures using the experiment loop.
+        This is curriculum Stage 1 (correctness). Uses ExperimentPipeline
+        for structured test-fix experiments.
         """
         from engine.curriculum import CurriculumRunner
         curriculum = CurriculumRunner()
@@ -1160,20 +1174,30 @@ class Orchestrator:
                 ),
             }
 
+        pipeline_guidance = self._get_pipeline_guidance()
+
         return {
             "status": "needs_agent",
             "action": "verify_correctness",
             "curriculum_stage": stage,
             "test_command": config.get("test_command"),
+            "pipeline": pipeline_guidance,
             "instruction": (
                 "Run the full test suite and fix any failures.\n\n"
                 f"Test command: {config.get('test_command')}\n"
                 f"{'Curriculum stage: ' + stage['name'] if stage else 'No curriculum defined'}\n\n"
+                "Use the ExperimentPipeline for each fix:\n"
+                "  from engine.pipeline import ExperimentPipeline\n"
+                "  pipe = ExperimentPipeline()\n"
+                "  exp = pipe.next_experiment()  # get temperature + strategy\n\n"
                 "For each failing test:\n"
                 "1. R1 DEEP READ: Understand the test and the code it tests\n"
                 "2. R2 HYPOTHESIZE: What is causing the failure?\n"
                 "3. R3 PREDICT: What fix will make it pass?\n"
-                "4. IMPLEMENT: Apply the fix (structural_replacement mutation)\n"
+                "4. IMPLEMENT: Apply the fix\n"
+                "   proposal = pipe.mutations.propose('structural_replacement', files, desc, hypothesis)\n"
+                "   # ... apply fix ...\n"
+                "   result = pipe.evaluate_and_decide(proposal, post_metrics)\n"
                 "5. TEST: Run the test suite again\n"
                 "6. REFLECT: Was the fix correct? Any side effects?\n\n"
                 "When all tests pass, call:\n"
@@ -1189,8 +1213,8 @@ class Orchestrator:
         """
         Execute optimize phase — improve metrics through curriculum stages.
 
-        Runs the experiment loop until all curriculum stages are met
-        or the experiment budget is exhausted.
+        Uses ExperimentPipeline for the full experiment loop with bandit
+        selection, temperature control, and automatic keep/revert decisions.
         """
         from engine.curriculum import CurriculumRunner
         curriculum = CurriculumRunner()
@@ -1213,12 +1237,15 @@ class Orchestrator:
         budget = config.get("experiment_budget", 200)
         remaining = max(0, budget - total_exp)
 
+        pipeline_guidance = self._get_pipeline_guidance()
+
         return {
             "status": "needs_agent",
             "action": "optimize",
             "curriculum_stage": stage,
             "mutation_strategy": strategy,
             "experiments_remaining": remaining,
+            "pipeline": pipeline_guidance,
             "instruction": (
                 f"Optimize: {stage['name']} — {stage.get('description', '')}\n\n"
                 f"Target: {stage['metric']} "
@@ -1228,17 +1255,24 @@ class Orchestrator:
                 f"Temperature: {strategy.get('temperature', 0.5)}\n"
                 f"Focus areas: {strategy.get('focus_areas', [])}\n"
                 f"Experiments remaining: {remaining}\n\n"
-                "Run the DeepResearch experiment loop:\n"
-                "1. R1 DEEP READ: What is the current bottleneck?\n"
-                "2. R2 HYPOTHESIZE: What change would improve the metric?\n"
-                "3. R3 PREDICT: How much improvement do you expect?\n"
-                "4. IMPLEMENT: Apply ONE focused mutation\n"
-                "5. EVALUATE: Measure the metric\n"
-                "6. REFLECT: Was prediction correct? Update mental model.\n\n"
+                "Use the ExperimentPipeline for the full loop:\n"
+                "  from engine.pipeline import ExperimentPipeline\n"
+                "  pipe = ExperimentPipeline()\n\n"
+                "Per experiment:\n"
+                "  exp = pipe.next_experiment()    # temperature, phase, strategy\n"
+                "  # 1. R1 DEEP READ: What is the current bottleneck?\n"
+                "  # 2. R2 HYPOTHESIZE: What change would improve the metric?\n"
+                "  # 3. R3 PREDICT: How much improvement do you expect?\n"
+                "  proposal = pipe.mutations.propose(mutation_type, files, desc, hypothesis)\n"
+                "  safety = pipe.mutations.check_safety(proposal)\n"
+                "  snapshot = pipe.mutations.snapshot_files(proposal.target_files)\n"
+                "  # 4. IMPLEMENT: Apply ONE focused mutation\n"
+                "  # ... write the code ...\n"
+                "  # 5. EVALUATE:\n"
+                "  result = pipe.evaluate_and_decide(proposal, post_metrics)\n"
+                "  # 6. REFLECT: Was prediction correct?\n\n"
                 "After each experiment, call:\n"
-                "  orchestrator.record_experiment('optimize', description)\n"
-                "  curriculum.update_metrics({...})\n"
-                "  curriculum.check_advancement()\n\n"
+                "  orchestrator.record_experiment('optimize', description)\n\n"
                 "When the curriculum stage target is met, call:\n"
                 "  orchestrator.run_phase('optimize')  # check if more stages remain"
             ),
