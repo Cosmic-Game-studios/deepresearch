@@ -171,7 +171,7 @@ echo "metric: $TOTAL"
 set -e
 RESULTS=$(python -m pytest tests/ --tb=no -q 2>&1)
 PASSED=$(echo "$RESULTS" | grep -oP '\d+(?= passed)')
-TOTAL=$(echo "$RESULTS" | grep -oP '\d+(?= passed)' | head -1)
+TOTAL=$(echo "$RESULTS" | grep -oP '\d+(?= (passed|failed))' | paste -sd+ | bc)
 # Benchmark
 START=$(date +%s%N)
 python benchmark.py > /dev/null 2>&1
@@ -1396,6 +1396,7 @@ Initialize with `bash init.sh --domain <name>` — sets target, metric, categori
 | `ml` | train.py | val_loss | lower | architecture, hyperparameters, optimizer, regularization, scheduling, efficiency |
 | `web_api` | src/ | p99_latency_ms | lower | algorithm, caching, connection_pooling, async, error_handling |
 | `code` | target.py | benchmark_time | lower | algorithm, memory, parallelism, io, architecture |
+| `optimization` | target.py | primary_metric | lower | algorithm, search_space, constraints, initialization, hybrid |
 | `prompt` | prompt.txt | judge_score | higher | structure, specificity, tone, examples, guardrails, persona |
 | `game` | src/ | composite | higher | economy, combat, progression, map_balance, ai_behavior |
 | `library` | src/ | benchmark_ops_sec | higher | algorithm, api_design, error_handling, data_structures |
