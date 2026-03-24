@@ -170,8 +170,9 @@ echo "metric: $TOTAL"
 # .deepresearch/eval.sh — run tests and measure pass rate + performance
 set -e
 RESULTS=$(python -m pytest tests/ --tb=no -q 2>&1)
-PASSED=$(echo "$RESULTS" | grep -oP '\d+(?= passed)')
-TOTAL=$(echo "$RESULTS" | grep -oP '\d+(?= (passed|failed))' | paste -sd+ | bc)
+PASSED=$(echo "$RESULTS" | grep -oP '\d+(?= passed)' || echo 0)
+FAILED=$(echo "$RESULTS" | grep -oP '\d+(?= failed)' || echo 0)
+TOTAL=$((${PASSED:-0} + ${FAILED:-0}))
 # Benchmark
 START=$(date +%s%N)
 python benchmark.py > /dev/null 2>&1
@@ -601,7 +602,7 @@ Each stage can focus on different mutation types: Stage 1 might use
 structural additions (build the foundation), Stage 3 might use parametric
 tuning (optimize what's already built).
 
-Generate templates: `python engine/level3.py curriculum-init web_api`
+Generate templates: `python -m engine.level3 curriculum web_api`
 Available: `web_api`, `ml_training`, `library`, `game`, `custom`.
 
 ### Domain Research Protocol (Level 2+ and Level 3)
@@ -651,9 +652,22 @@ domain_knowledge.json). Next session continues where the last stopped.
 - **Level 2** — The code is missing features. Adding capabilities would help more than tuning existing ones.
 - **Level 3** — Starting from a specification. No code exists yet, or the existing code needs fundamental redesign.
 
-The Reasoning Layer (R1 Deep Read) helps decide: if the bottleneck is
-a parameter (LR too high, cache too small), use Level 1. If the bottleneck
-is a missing capability (no caching at all, no error handling), use Level 2.
+**Decision flowchart:**
+```
+Code exists? ─NO──→ Level 3 (build from spec)
+     │
+    YES
+     │
+Bottleneck is...?
+  ├─ A parameter value (LR, cache size, pool count) → Level 1
+  ├─ A missing capability (no caching, no error handling) → Level 2
+  └─ Wrong architecture (sync→async, monolith→microservice) → Level 3 redesign
+```
+
+Use `FeatureDiscovery.generate_analysis_prompt()` (from engine/mutations.py)
+to systematically scan for missing capabilities before choosing Level 2.
+It provides universal patterns (caching, batching, connection pooling, etc.)
+the agent evaluates against the specific codebase during R1 Deep Read.
 
 ### Multi-File Scope (Level 2+)
 
@@ -675,9 +689,12 @@ are a single experiment — atomic commit, atomic revert.
 
 ### Architecture Planning (Level 3)
 
-Before coding from a specification, write `.deepresearch/architecture_plan.md`:
+Before coding from a specification, write `.deepresearch/architecture_plan.json`.
+The Architect class (engine/autonomous.py) expects JSON format:
 
 ```markdown
+<!-- The plan content below is stored as structured JSON, but for readability
+     the template is shown in markdown. Convert to JSON before saving. -->
 ## Components
 1. [Name] — [purpose] — [estimated complexity]
 
@@ -697,7 +714,7 @@ be "implement the plan." Experiment #2 might be "the plan was wrong about
 X, redesign the data flow." The Reasoning Layer treats the architecture
 as a hypothesis to be tested, not a fixed blueprint.
 
-Generate a plan template: `python engine/level3.py plan "your spec here"`
+View the architecture plan: `python -m engine.level3 architect`
 
 ### Level 3 Thinking Protocol
 
@@ -888,8 +905,11 @@ T > 0.7  (hot)   → Level 2 mutations. Add features, replace algorithms,
                     proposal = mm.propose("structural_addition", ["src/app.py"],
                         description="Add connection pooling",
                         hypothesis="DB connections are the bottleneck")
-                    # Apply the change, then:
-                    result = mm.execute(proposal)  # tests before/after, auto-revert
+                    safety = mm.check_safety(proposal)  # verify before applying
+                    if safety["safe"]:
+                        # Agent writes the code changes to files FIRST
+                        # Then call execute() — it snapshots, tests, auto-reverts if broken
+                        result = mm.execute(proposal)
 
 T 0.3–0.7 (warm) → Level 1-2 mix. Parameter changes + small structural additions.
                     Moderate scope: change a value OR add a small helper function.
@@ -1134,8 +1154,9 @@ python -m engine.level3 techniques
 #   proposal = mm.propose("structural_addition", ["src/db.py"],
 #       description="Add connection pool with pool_size=20",
 #       hypothesis="DB connections are bottleneck, pooling reduces to near-zero")
-#   # Agent writes the code (adds ConnectionPool class, integrates into query())
-#   result = mm.execute(proposal)  # pre-test → apply → post-test → auto-revert if broken
+#   safety = mm.check_safety(proposal)  # → {safe: True, reasons: [], warnings: []}
+#   # Agent writes the code FIRST (adds ConnectionPool class, integrates into query())
+#   result = mm.execute(proposal)  # snapshots → post-test → auto-revert if broken
 
 # ─── 6. EXECUTE EVAL ───
 bash .deepresearch/eval.sh
