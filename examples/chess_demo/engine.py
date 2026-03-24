@@ -20,8 +20,8 @@ import time
 # ════════════════════════════════════════════════════════════
 
 PIECE_VALUES = {
-    'P': 100, 'N': 300, 'B': 310, 'R': 500, 'Q': 900, 'K': 0,
-    'p': -100, 'n': -300, 'b': -310, 'r': -500, 'q': -900, 'k': 0,
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 0,
+    'p': -100, 'n': -320, 'b': -330, 'r': -500, 'q': -900, 'k': 0,
 }
 
 # Piece-square tables (white's perspective, index 0=a8, 63=h1)
@@ -56,8 +56,8 @@ PST = {'P': PAWN_PST, 'N': KNIGHT_PST}
 
 SEARCH_DEPTH = 3          # L1: tune 1-5
 QUIESCENCE_DEPTH = 0      # L2: add quiescence search (set to 2+)
-USE_MOVE_ORDERING = False  # L2: add move ordering
-USE_TT = False             # L2: add transposition table
+USE_MOVE_ORDERING = True   # L2: add move ordering
+USE_TT = True              # L2: add transposition table
 
 # ════════════════════════════════════════════════════════════
 # BOARD REPRESENTATION
