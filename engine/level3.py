@@ -103,13 +103,18 @@ def cmd_next():
     orch = Orchestrator()
     action = orch.get_next_action()
     print(f"Phase: {orch.current_phase}")
-    print(f"Action: {action['action']}")
-    if 'prompt' in action:
+    print(f"Action: {action.get('action', '?')}")
+    if 'instruction' in action:
+        print(f"\nInstructions for the agent:\n{action['instruction']}")
+    elif 'prompt' in action:
         print(f"\nInstructions for the agent:\n{action['prompt']}")
     if 'message' in action:
         print(f"\n{action['message']}")
-    if 'tools' in action:
-        print(f"\nTools to use: {action['tools']}")
+    if action.get('pipeline'):
+        pipe = action['pipeline']
+        print(f"\nPipeline state: T={pipe.get('temperature', '?')}, "
+              f"experiments={pipe.get('experiment_count', 0)}, "
+              f"best={pipe.get('best_metric', 'N/A')}")
 
 
 def cmd_bootstrap():
