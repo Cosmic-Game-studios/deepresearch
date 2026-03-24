@@ -369,7 +369,11 @@ ka.extract_technique(source_url=url, name="connection_pooling",
     evidence="Benchmarks show 3x throughput",
     applicable_when="DB calls are the bottleneck")
 
-# 4. Get knowledge-backed hypothesis context for R2
+# 4. Get prioritized next technique (pass failed ones to skip them)
+next_technique = ka.suggest_next(current_bottleneck="DB latency",
+                                 failed=["thread_pooling"])  # won't suggest thread_pooling
+
+# 5. Get knowledge-backed hypothesis context for R2
 context = ka.hypothesis_context("connection_pooling", "DB latency 142ms")
 ```
 
@@ -608,30 +612,18 @@ Available: `web_api`, `ml_training`, `library`, `game`, `custom`.
 ### Domain Research Protocol (Level 2+ and Level 3)
 
 Before coding or before a Level 2 structural mutation, the agent acquires
-domain knowledge using the knowledge system:
+domain knowledge using the knowledge system. The full API is documented
+in R1 Extended (above). Quick reference:
 
 ```python
 from engine.knowledge import KnowledgeAcquisition
-
 ka = KnowledgeAcquisition(domain="web_api", spec="Optimize REST API", language="python")
 
-# 1. Generate search queries (prioritized by bottleneck)
+# Research → register → extract → suggest (see R1 Extended for full example)
 queries = ka.generate_searches(bottleneck="latency")
-
-# 2. For each query: web_search → read top results → register + extract
-for q in queries[:5]:
-    # Agent uses web_search(q["query"]), reads results
-    ka.register_source(url, title, source_type="documentation", relevance=0.9)
-    ka.mark_source_read(url, summary="...", key_insights=["..."])
-    ka.extract_technique(source_url=url, name="...", description="...",
-                        expected_impact="...", evidence="...",
-                        applicable_when="...", complexity="...")
-
-# 3. Get prioritized technique list
-next_technique = ka.suggest_next(current_bottleneck="DB latency")
+next_technique = ka.suggest_next(current_bottleneck="DB latency",
+                                 failed=["thread_pooling", "query_cache"])  # skip failed techniques
 context = ka.hypothesis_context("connection_pooling", "DB latency 142ms")
-
-# 4. After each experiment, record the result
 ka.record_result("connection_pooling", "worked: p99 from 142ms to 85ms")
 ```
 
@@ -642,6 +634,11 @@ ka.record_result("connection_pooling", "worked: p99 from 142ms to 85ms")
 4. **Build technique library:** The agent's domain-specific menu, built from research (not pre-defined)
 5. **Define curriculum:** Progressive goals from correctness to optimization
 6. **Begin experiments:** Use `ka.suggest_next()` and `ka.hypothesis_context()` in R2
+
+**Curriculum ↔ Knowledge integration:** Not every curriculum stage needs research.
+Stage 1 (correctness) is about making tests pass — skip research, go straight to code.
+Stages 2+ (performance, scale) benefit from domain research. Rule of thumb:
+if the stage target requires a technique you haven't built before, research first.
 
 All research persists in `.deepresearch/research/` (sources.json, techniques.json,
 domain_knowledge.json). Next session continues where the last stopped.
@@ -692,21 +689,26 @@ are a single experiment — atomic commit, atomic revert.
 Before coding from a specification, write `.deepresearch/architecture_plan.json`.
 The Architect class (engine/autonomous.py) expects JSON format:
 
-```markdown
-<!-- The plan content below is stored as structured JSON, but for readability
-     the template is shown in markdown. Convert to JSON before saving. -->
-## Components
-1. [Name] — [purpose] — [estimated complexity]
-
-## Dependency Order
-1. [Foundation] (no deps) → build first
-2. [Next] (depends on #1) → build second
-
-## Key Design Decisions
-- [Decision]: [option A] vs [option B], chose [X] because [reason]
-
-## Test Strategy per Component
-- [Component]: [how to verify it works in isolation]
+```json
+{
+  "components": [
+    {"name": "Parser", "purpose": "Parse CSV rows with streaming", "complexity": "medium",
+     "dependencies": []},
+    {"name": "Validator", "purpose": "Validate fields against schema", "complexity": "low",
+     "dependencies": ["Parser"]},
+    {"name": "Converter", "purpose": "Transform rows to JSON", "complexity": "medium",
+     "dependencies": ["Parser", "Validator"]}
+  ],
+  "build_order": ["Parser", "Validator", "Converter"],
+  "design_decisions": [
+    {"decision": "Streaming vs batch", "chosen": "streaming", "reason": "Memory-bounded for large files"}
+  ],
+  "test_strategy": {
+    "Parser": "Unit test with malformed CSV edge cases",
+    "Validator": "Property-based tests with hypothesis",
+    "Converter": "Golden file comparison tests"
+  }
+}
 ```
 
 The plan is itself an artifact that can be iterated. Experiment #1 might
@@ -1647,9 +1649,15 @@ Signs of metric gaming:
 - Code benchmark: function gets faster by returning wrong results
 - Test suite: tests pass by catching exceptions instead of fixing bugs
 
-Mitigation: every 25 experiments, run a **sanity check** — have the agent
-read the current best artifact and confirm it still makes sense. If it
-looks degenerate, pause and flag for human review. The eval harness may need
+**Early detection (every experiment):** If metric improves >15% but code
+diff is <10 lines changed, immediately inspect the change. Red flags:
+- Output format changed (eval harness parsing may be tricked)
+- Error handling swallows failures instead of fixing them
+- Test assertions weakened rather than code improved
+
+**Full sanity check (every 25 experiments):** Have the agent read the
+current best artifact and confirm it still makes sense. If it looks
+degenerate, pause and flag for human review. The eval harness may need
 refinement (but never change it mid-session — start a new session with a
 better harness).
 
