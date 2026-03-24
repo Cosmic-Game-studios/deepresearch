@@ -59,6 +59,16 @@ The advantage is largest at low experiment counts — exactly where it matters m
 
 ![DeepResearch vs Autoresearch convergence](progress.png)
 
+### Chess Engine: DeepResearch vs Autoresearch
+
+![Chess benchmark](benchmark_chess.png)
+
+Both strategies start from deliberately bad piece values (P=60, N=200, B=200, R=700, Q=600) and get 25 experiments to optimize. DeepResearch fixes the worst problems first (Q is massively undervalued), then adds structural features, then fine-tunes. Autoresearch mutates randomly.
+
+```bash
+python examples/chess_demo/benchmark_vs_autoresearch.py
+```
+
 ### Level 1→3: Adding features crushes parameter tuning
 
 ![Level 3 proof](level3_proof.png)
