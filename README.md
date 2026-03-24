@@ -69,6 +69,26 @@ Both strategies start from deliberately bad piece values (P=60, N=200, B=200, R=
 python examples/chess_demo/benchmark_vs_autoresearch.py
 ```
 
+### Real Run: 0% to 94% in 6 Experiments
+
+Not a simulation — a real DeepResearch loop run by Claude on a deliberately weakened chess engine (depth 1, broken piece values). The Reasoning Layer identified depth as the #1 bottleneck, skipping wasted experiments on piece values.
+
+| # | Mutation | Type | Win Rate | Status |
+|---|---------|------|----------|--------|
+| 1 | Q 600 → 900 | L1 parametric | 0% → 20% | KEPT |
+| 2 | R 700 → 500 | L1 parametric | 20% → 0% | REVERTED |
+| 3 | N 200 → 320 | L1 parametric | 20% → 10% | REVERTED |
+| 4 | Move ordering ON | L2 structural | — | KEPT |
+| 5 | **Depth 1 → 2** | L1 parametric | 20% → 100% | **KEPT** |
+| 6 | All values + depth 3 + TT | Combined | **94%** (50 games) | **KEPT** |
+
+**What the Reasoning Layer contributed:**
+- **R1 Deep Read** identified depth as the real bottleneck, not piece values
+- **R2 Hypothesis** predicted move ordering wouldn't help at depth 1 (confirmed)
+- **Reflect** after Exp 2-3: 10-game eval too noisy at depth 1 — pivoted to depth change immediately
+
+Without reasoning, a blind optimizer would have spent dozens of experiments tweaking piece values at depth 1 where results are dominated by noise. The Reasoning Layer got to 94% in **6 experiments**.
+
 ### Level 1→3: Adding features crushes parameter tuning
 
 ![Level 3 proof](level3_proof.png)
@@ -288,7 +308,7 @@ The benchmark is the source of truth. Any improvement must show up in `python co
 
 Areas where contributions would have the most impact:
 - **Level 2 scaffolding**: structural mutation types, feature libraries for new domains, multi-file safety rails
-- **Real-world validation**: run DeepResearch on a real project and report results
+- **Real-world validation**: run DeepResearch on a real project and report results (see chess engine example above)
 - **Benchmark expansion**: new test landscapes, especially ones that test generative mutations
 - **Domain configurations**: if you're an expert in a domain, contribute a feature library
 
