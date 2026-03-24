@@ -3,21 +3,28 @@ DeepResearch Level 3 — Autonomous Engineer
 
 The full pipeline: Specification → Research → Architecture → Build → Test → Optimize
 
-This module provides the SCAFFOLDING for autonomous software engineering.
-The actual intelligence comes from the LLM (Opus 4.6+) — this module
-structures HOW the LLM applies its intelligence.
+This module is the COMPLETE Level 3 implementation. It drives the full
+autonomous engineering pipeline — from specification to finished, optimized
+system. The LLM (Opus 4.6+) provides the intelligence; this module provides
+the structure, state machine, safety rails, and integration glue.
 
 Components:
 1. DomainResearcher — Structured knowledge acquisition before coding
 2. Architect — System design, component planning, dependency ordering
 3. Bootstrapper — Project creation from architecture plan
-4. Orchestrator — Full pipeline that ties everything together
+4. ReportGenerator — Generates final research reports from collected data
+5. Orchestrator — Full pipeline that ties everything together
 
 Usage:
     from engine.autonomous import Orchestrator
-    
+
     orch = Orchestrator(spec="Build a REST API for task management")
     orch.run()  # Runs the full Level 3 pipeline
+
+    # Or step-by-step:
+    action = orch.get_next_action()   # What should the agent do?
+    orch.run_phase()                   # Execute current phase
+    orch.run_phase("build")            # Execute a specific phase
 """
 
 import json
@@ -389,7 +396,227 @@ class Bootstrapper:
 
 
 # ════════════════════════════════════════════════════════════
-# 4. ORCHESTRATOR — The full Level 3 pipeline
+# 4. REPORT GENERATOR — Build final report from collected data
+# ════════════════════════════════════════════════════════════
+
+class ReportGenerator:
+    """
+    Generates a comprehensive research report from all collected data:
+    - Domain research findings
+    - Architecture decisions
+    - Experiment log (kept/reverted/crashed)
+    - Curriculum progress
+    - Technique library results
+    - Timing and efficiency stats
+    """
+
+    def __init__(self, project_root: str = "."):
+        self.root = Path(project_root)
+        self.dr_dir = self.root / ".deepresearch"
+
+    def _load_json(self, path: Path, default=None):
+        if path.exists():
+            return json.loads(path.read_text())
+        return default or {}
+
+    def _load_jsonl(self, path: Path) -> list:
+        if not path.exists():
+            return []
+        lines = path.read_text().strip().split("\n")
+        return [json.loads(l) for l in lines if l.strip()]
+
+    def generate(self) -> str:
+        """Generate the full research report as markdown."""
+        state = self._load_json(self.dr_dir / "orchestrator_state.json")
+        research = self._load_json(self.dr_dir / "research" / "domain_knowledge.json")
+        arch_plan = self._load_json(self.dr_dir / "architecture_plan.json")
+        experiments = self._load_jsonl(self.dr_dir / "experiments.jsonl")
+        curriculum = self._load_json(self.dr_dir / "curriculum.json")
+        curriculum_history = self._load_jsonl(self.dr_dir / "curriculum_history.jsonl")
+        strategy = self._load_json(self.dr_dir / "strategy-state.json")
+        techniques = self._load_json(self.dr_dir / "research" / "techniques.json")
+
+        lines = []
+
+        # Header
+        spec = state.get("spec", "")
+        lines.append(f"# DeepResearch Level 3 — Final Report")
+        lines.append(f"")
+        lines.append(f"**Specification:** {spec}")
+        lines.append(f"**Started:** {state.get('started_at', '?')}")
+        lines.append(f"**Generated:** {datetime.now().isoformat()}")
+        lines.append(f"**Total experiments:** {len(experiments)}")
+        lines.append("")
+
+        # Phase timeline
+        lines.append("## Phase Timeline")
+        lines.append("")
+        for h in state.get("phase_history", []):
+            lines.append(f"- **{h['phase'].upper()}** completed at {h['completed_at']}")
+        current = state.get("current_phase", "?")
+        if current != "complete":
+            lines.append(f"- **{current.upper()}** (in progress)")
+        lines.append("")
+
+        # Domain Research
+        if research and research.get("research_complete"):
+            lines.append("## Domain Research Findings")
+            lines.append("")
+            for section in ["spec_analysis", "existing_solutions", "architecture", "test_strategy"]:
+                data = research.get(section, {})
+                if data:
+                    lines.append(f"### {section.replace('_', ' ').title()}")
+                    for k, v in data.items():
+                        if k != "completed_at":
+                            lines.append(f"- **{k}:** {v}")
+                    lines.append("")
+
+        # Architecture
+        if arch_plan.get("components"):
+            lines.append("## Architecture")
+            lines.append("")
+            lines.append(f"**Build order:** {' -> '.join(arch_plan.get('build_order', []))}")
+            lines.append(f"**Estimated experiments:** {arch_plan.get('total_estimated_experiments', '?')}")
+            lines.append("")
+            for comp in arch_plan["components"]:
+                status_icon = {"tested": "pass", "optimized": "pass", "implemented": "built",
+                               "in_progress": "wip", "planned": "todo"}.get(comp.get("status", ""), "?")
+                lines.append(f"- **{comp['name']}** [{status_icon}]: {comp['purpose']}")
+                lines.append(f"  Files: {comp.get('files', [])}")
+            lines.append("")
+
+        # Experiment Summary
+        if experiments:
+            lines.append("## Experiment Summary")
+            lines.append("")
+            total = len(experiments)
+            kept = sum(1 for e in experiments if e.get("status") == "kept")
+            reverted = sum(1 for e in experiments if e.get("status") == "reverted")
+            crashed = sum(1 for e in experiments if e.get("status") == "crashed")
+            blocked = sum(1 for e in experiments if e.get("status") == "blocked")
+            lines.append(f"| Metric | Value |")
+            lines.append(f"|--------|-------|")
+            lines.append(f"| Total experiments | {total} |")
+            lines.append(f"| Kept | {kept} ({kept/total*100:.0f}%) |")
+            lines.append(f"| Reverted | {reverted} ({reverted/total*100:.0f}%) |")
+            lines.append(f"| Crashed | {crashed} |")
+            lines.append(f"| Blocked | {blocked} |")
+            lines.append(f"| Success rate | {kept/total*100:.1f}% |")
+            lines.append("")
+
+            # Mutation type breakdown
+            mt_stats = {}
+            for e in experiments:
+                mt = e.get("mutation_type", "unknown")
+                if mt not in mt_stats:
+                    mt_stats[mt] = {"total": 0, "kept": 0}
+                mt_stats[mt]["total"] += 1
+                if e.get("status") == "kept":
+                    mt_stats[mt]["kept"] += 1
+            lines.append("### By Mutation Type")
+            lines.append("")
+            lines.append("| Type | Total | Kept | Rate |")
+            lines.append("|------|-------|------|------|")
+            for mt, stats in sorted(mt_stats.items(), key=lambda x: -x[1]["total"]):
+                rate = stats["kept"] / stats["total"] * 100 if stats["total"] > 0 else 0
+                lines.append(f"| {mt} | {stats['total']} | {stats['kept']} | {rate:.0f}% |")
+            lines.append("")
+
+            # Top improvements
+            improvements = sorted(
+                [e for e in experiments if e.get("improvement_pct", 0) > 0],
+                key=lambda e: -e.get("improvement_pct", 0)
+            )[:10]
+            if improvements:
+                lines.append("### Top Improvements")
+                lines.append("")
+                for e in improvements:
+                    lines.append(
+                        f"- **{e.get('id')}** ({e.get('mutation_type')}): "
+                        f"+{e.get('improvement_pct', 0):.2f}% — {e.get('description', '')}"
+                    )
+                lines.append("")
+
+        # Curriculum Progress
+        if curriculum.get("stages"):
+            lines.append("## Curriculum Progress")
+            lines.append("")
+            for i, stage in enumerate(curriculum["stages"]):
+                # Check if completed from history
+                completed = any(
+                    h.get("event") == "stage_completed" and h.get("stage") == stage["name"]
+                    for h in curriculum_history
+                )
+                icon = "pass" if completed else "pending"
+                lines.append(f"- [{icon}] **{stage['name']}**: {stage.get('description', '')}")
+                lines.append(f"  Target: {stage['metric']} {'>=' if stage.get('direction') == 'higher' else '<='} {stage['target']}")
+            lines.append("")
+
+        # Techniques
+        tech_list = techniques.get("techniques", [])
+        if tech_list:
+            lines.append("## Technique Library")
+            lines.append("")
+            successful = [t for t in tech_list if t.get("tried") and "worked" in t.get("result", "").lower()]
+            failed = [t for t in tech_list if t.get("tried") and "failed" in t.get("result", "").lower()]
+            untried = [t for t in tech_list if not t.get("tried")]
+            if successful:
+                lines.append(f"### Successful ({len(successful)})")
+                for t in successful:
+                    lines.append(f"- **{t['name']}**: {t.get('result', '')}")
+            if failed:
+                lines.append(f"### Failed ({len(failed)})")
+                for t in failed:
+                    lines.append(f"- **{t['name']}**: {t.get('result', '')}")
+            if untried:
+                lines.append(f"### Untried ({len(untried)})")
+                for t in untried:
+                    lines.append(f"- **{t['name']}**: {t.get('description', '')} [{t.get('complexity', '?')}]")
+            lines.append("")
+
+        # Strategy stats
+        if strategy:
+            lines.append("## Strategy Engine Stats")
+            lines.append("")
+            lines.append(f"- **Final temperature:** {strategy.get('temperature', '?')}")
+            lines.append(f"- **Best metric:** {strategy.get('best_metric', 'N/A')}")
+            lines.append(f"- **Baseline metric:** {strategy.get('baseline_metric', 'N/A')}")
+            baseline = strategy.get("baseline_metric")
+            best = strategy.get("best_metric")
+            if baseline is not None and best is not None and baseline != 0:
+                improvement = abs(best - baseline) / abs(baseline) * 100
+                lines.append(f"- **Total improvement:** {improvement:.1f}%")
+            lines.append("")
+
+            # Bandit arms
+            arms = strategy.get("bandit_arms", {})
+            if arms:
+                lines.append("### Bandit Arms (Thompson Sampling)")
+                lines.append("")
+                lines.append("| Mutation Type | Trials | Successes | Rate |")
+                lines.append("|--------------|--------|-----------|------|")
+                for name, arm in sorted(arms.items(), key=lambda x: -x[1].get("trials", 0)):
+                    trials = arm.get("trials", 0)
+                    successes = arm.get("alpha", 1) - 1
+                    rate = successes / trials * 100 if trials > 0 else 0
+                    lines.append(f"| {name} | {trials} | {successes} | {rate:.0f}% |")
+                lines.append("")
+
+        return "\n".join(lines)
+
+    def save(self, filename: str = "research_report.md") -> str:
+        """Generate and save the report. Returns the file path."""
+        report = self.generate()
+        report_dir = self.dr_dir / "reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = report_dir / f"{ts}_{filename}"
+        path.write_text(report)
+        return str(path)
+
+
+# ════════════════════════════════════════════════════════════
+# 5. ORCHESTRATOR — The full Level 3 pipeline
 # ════════════════════════════════════════════════════════════
 
 class Orchestrator:
@@ -419,12 +646,23 @@ class Orchestrator:
         {"name": "report", "description": "Document findings and generate research report"},
     ]
 
+    PHASE_PREREQUISITES = {
+        "research": [],
+        "architect": ["research"],
+        "bootstrap": ["architect"],
+        "build": ["bootstrap"],
+        "test": ["build"],
+        "optimize": ["test"],
+        "report": [],  # can generate report at any time
+    }
+
     def __init__(self, spec: str = "", project_root: str = "."):
         self.spec = spec
         self.root = Path(project_root)
         self.state_path = DR_DIR / "orchestrator_state.json"
         self.researcher = DomainResearcher()
         self.architect = Architect()
+        self.report_gen = ReportGenerator(project_root)
         self.state = self._load_state()
 
     def _load_state(self) -> dict:
@@ -613,3 +851,462 @@ class Orchestrator:
 
         lines.append(f"\n{'═'*60}")
         return "\n".join(lines)
+
+    # ── Phase Validation ──────────────────────────────────────
+
+    def validate_phase(self, phase_name: str) -> dict:
+        """
+        Check if a phase can be executed.
+        Returns {"valid": bool, "reasons": list, "warnings": list}.
+        """
+        result = {"valid": True, "reasons": [], "warnings": []}
+
+        # Check phase exists
+        phase_names = [p["name"] for p in self.PHASES]
+        if phase_name not in phase_names:
+            result["valid"] = False
+            result["reasons"].append(f"Unknown phase: {phase_name}")
+            return result
+
+        # Check prerequisites
+        completed_phases = {h["phase"] for h in self.state.get("phase_history", [])}
+        for prereq in self.PHASE_PREREQUISITES.get(phase_name, []):
+            if prereq not in completed_phases:
+                result["valid"] = False
+                result["reasons"].append(
+                    f"Phase '{phase_name}' requires '{prereq}' to be completed first"
+                )
+
+        # Phase-specific validation
+        if phase_name == "architect":
+            self.researcher.load()
+            if not self.researcher.knowledge.get("research_complete"):
+                result["warnings"].append(
+                    "Research is not marked as complete — architecture may be uninformed"
+                )
+
+        elif phase_name == "bootstrap":
+            self.architect.load()
+            if not self.architect.components:
+                result["valid"] = False
+                result["reasons"].append("No architecture plan defined")
+
+        elif phase_name == "build":
+            self.architect.load()
+            if not self.architect.components:
+                result["valid"] = False
+                result["reasons"].append("No components to build")
+
+        return result
+
+    # ── Run Methods ───────────────────────────────────────────
+
+    def run(self, max_experiments: int = 200) -> dict:
+        """
+        Run the full Level 3 pipeline from current phase to completion.
+
+        This is the main entry point. It drives through all phases:
+        research → architect → bootstrap → build → test → optimize → report
+
+        Args:
+            max_experiments: Safety limit on total experiments (build + test + optimize).
+
+        Returns:
+            {"status": "complete"/"stopped"/"error", "phases_completed": list,
+             "total_experiments": int, "report_path": str}
+        """
+        result = {
+            "status": "complete",
+            "phases_completed": [],
+            "total_experiments": 0,
+            "report_path": "",
+            "errors": [],
+        }
+
+        while self.current_phase != "complete":
+            # Safety limit
+            total_exp = self.state.get("total_experiments", 0)
+            if total_exp >= max_experiments:
+                result["status"] = "stopped"
+                result["errors"].append(
+                    f"Experiment budget exhausted ({total_exp}/{max_experiments})"
+                )
+                break
+
+            phase = self.current_phase
+            validation = self.validate_phase(phase)
+            if not validation["valid"]:
+                result["status"] = "error"
+                result["errors"].extend(validation["reasons"])
+                break
+
+            phase_result = self.run_phase(phase)
+            if phase_result.get("status") == "error":
+                result["status"] = "error"
+                result["errors"].append(
+                    f"Phase '{phase}' failed: {phase_result.get('error', '?')}"
+                )
+                break
+
+            result["phases_completed"].append(phase)
+            result["total_experiments"] = self.state.get("total_experiments", 0)
+
+        result["total_experiments"] = self.state.get("total_experiments", 0)
+        return result
+
+    def run_phase(self, phase_name: str = None) -> dict:
+        """
+        Execute a single phase of the pipeline.
+
+        If phase_name is None, runs the current phase.
+        Returns {"status": "complete"/"error", "phase": str, ...}
+        """
+        phase = phase_name or self.current_phase
+
+        if phase == "complete":
+            return {"status": "complete", "phase": "complete",
+                    "message": "Pipeline already complete"}
+
+        # Validate
+        validation = self.validate_phase(phase)
+        if not validation["valid"]:
+            return {"status": "error", "phase": phase,
+                    "error": "; ".join(validation["reasons"])}
+
+        # Dispatch to phase handler
+        handlers = {
+            "research": self._run_research,
+            "architect": self._run_architect,
+            "bootstrap": self._run_bootstrap,
+            "build": self._run_build,
+            "test": self._run_test,
+            "optimize": self._run_optimize,
+            "report": self._run_report,
+        }
+        handler = handlers.get(phase)
+        if not handler:
+            return {"status": "error", "phase": phase,
+                    "error": f"No handler for phase '{phase}'"}
+
+        result = handler()
+        result["phase"] = phase
+
+        # Auto-advance if handler completed successfully
+        if result.get("status") == "complete" and self.current_phase == phase:
+            self.advance_phase()
+
+        return result
+
+    def _run_research(self) -> dict:
+        """Execute research phase — iterate through all 4 research sub-phases."""
+        self.researcher.load()
+        phases_done = []
+
+        while True:
+            phase = self.researcher.get_current_phase()
+            if phase is None:
+                break
+            phases_done.append(phase["phase"])
+            # Return structured instruction for the agent
+            # The agent fills in the findings using researcher.complete_phase()
+            return {
+                "status": "needs_agent",
+                "action": "research",
+                "research_phase": phase["phase"],
+                "prompt": phase["prompt"],
+                "spec": self.spec or self.state.get("spec", ""),
+                "instruction": (
+                    f"Complete research phase '{phase['phase']}'.\n\n"
+                    f"{phase['prompt']}\n\n"
+                    f"After answering, call:\n"
+                    f"  orchestrator.researcher.complete_phase('{phase['phase']}', findings)\n"
+                    f"where findings is a dict with your answers.\n"
+                    f"Then call orchestrator.run_phase('research') again for the next phase."
+                ),
+                "phases_done": phases_done,
+            }
+
+        return {
+            "status": "complete",
+            "phases_done": phases_done,
+            "report": self.researcher.generate_research_report(),
+        }
+
+    def _run_architect(self) -> dict:
+        """Execute architect phase."""
+        self.architect.load()
+
+        if self.architect.components:
+            return {
+                "status": "complete",
+                "components": len(self.architect.components),
+                "build_order": self.architect.get_build_order(),
+            }
+
+        self.researcher.load()
+        return {
+            "status": "needs_agent",
+            "action": "design_architecture",
+            "research": self.researcher.knowledge,
+            "instruction": (
+                "Design the system architecture based on domain research.\n\n"
+                "For each component, call:\n"
+                "  orchestrator.architect.add_component(\n"
+                "      name='component_name',\n"
+                "      purpose='what it does',\n"
+                "      files=['src/file.py'],\n"
+                "      depends_on=['other_component'],\n"
+                "      test_file='tests/test_component.py',\n"
+                "      estimated_experiments=5\n"
+                "  )\n\n"
+                "Then call:\n"
+                "  orchestrator.architect.save()\n"
+                "  orchestrator.run_phase('architect')  # to verify and advance"
+            ),
+        }
+
+    def _run_bootstrap(self) -> dict:
+        """Execute bootstrap phase — create project structure."""
+        self.architect.load()
+        created = Bootstrapper.bootstrap(self.architect, str(self.root))
+        return {
+            "status": "complete",
+            "files_created": created,
+            "file_count": len(created),
+        }
+
+    def _run_build(self) -> dict:
+        """
+        Execute build phase — implement components in dependency order.
+
+        Iterates through components. For each unbuilt component, returns
+        instructions for the agent. The agent implements it, then calls
+        run_phase('build') again for the next component.
+        """
+        self.architect.load()
+        next_comp = self.architect.next_component()
+
+        if next_comp is None:
+            return {
+                "status": "complete",
+                "message": "All components implemented",
+                "components_built": [
+                    c.name for c in self.architect.components
+                    if c.status in ("implemented", "tested", "optimized")
+                ],
+            }
+
+        # Mark as in_progress
+        self.architect.update_status(next_comp.name, "in_progress")
+
+        # Build order progress
+        build_order = self.architect.get_build_order()
+        done = [c for c in self.architect.components
+                if c.status in ("implemented", "tested", "optimized")]
+        progress = f"{len(done)}/{len(self.architect.components)}"
+
+        return {
+            "status": "needs_agent",
+            "action": "implement_component",
+            "component": asdict(next_comp),
+            "build_progress": progress,
+            "build_order": build_order,
+            "instruction": (
+                f"Implement component '{next_comp.name}': {next_comp.purpose}\n\n"
+                f"Progress: {progress} components built\n"
+                f"Files to create/modify: {next_comp.files}\n"
+                f"Dependencies (already implemented): {next_comp.depends_on}\n"
+                f"Test file: {next_comp.test_file}\n\n"
+                "Use the DeepResearch experiment loop:\n"
+                "1. R1 DEEP READ: Read the dependency files to understand interfaces\n"
+                "2. R2 HYPOTHESIZE: What is the best implementation approach?\n"
+                "3. R3 PREDICT: How many experiments will this take?\n"
+                "4. IMPLEMENT: Write the code (structural_addition mutation)\n"
+                "5. TEST: Run tests to verify correctness\n"
+                "6. REFLECT: What worked, what didn't?\n\n"
+                "When tests pass, call:\n"
+                f"  orchestrator.architect.update_status('{next_comp.name}', 'tested')\n"
+                f"  orchestrator.record_experiment('build', '{next_comp.name}')\n"
+                "  orchestrator.run_phase('build')  # next component"
+            ),
+            "mutation_type": "structural_addition",
+        }
+
+    def _run_test(self) -> dict:
+        """
+        Execute test phase — verify all components pass tests.
+
+        This is curriculum Stage 1 (correctness). The agent runs the
+        full test suite and fixes any failures using the experiment loop.
+        """
+        from engine.curriculum import CurriculumRunner
+        curriculum = CurriculumRunner()
+        stage = curriculum.current_stage()
+
+        # Check if we have a test command
+        config_path = DR_DIR / "config.json"
+        config = {}
+        if config_path.exists():
+            config = json.loads(config_path.read_text())
+
+        if not config.get("test_command"):
+            return {
+                "status": "needs_agent",
+                "action": "configure_tests",
+                "instruction": (
+                    "No test_command configured. Set it in .deepresearch/config.json:\n"
+                    '  {"test_command": "pytest tests/ -q"}\n\n'
+                    "Then call orchestrator.run_phase('test') again."
+                ),
+            }
+
+        return {
+            "status": "needs_agent",
+            "action": "verify_correctness",
+            "curriculum_stage": stage,
+            "test_command": config.get("test_command"),
+            "instruction": (
+                "Run the full test suite and fix any failures.\n\n"
+                f"Test command: {config.get('test_command')}\n"
+                f"{'Curriculum stage: ' + stage['name'] if stage else 'No curriculum defined'}\n\n"
+                "For each failing test:\n"
+                "1. R1 DEEP READ: Understand the test and the code it tests\n"
+                "2. R2 HYPOTHESIZE: What is causing the failure?\n"
+                "3. R3 PREDICT: What fix will make it pass?\n"
+                "4. IMPLEMENT: Apply the fix (structural_replacement mutation)\n"
+                "5. TEST: Run the test suite again\n"
+                "6. REFLECT: Was the fix correct? Any side effects?\n\n"
+                "When all tests pass, call:\n"
+                "  orchestrator.record_experiment('test', 'all_tests_passing')\n"
+                "  orchestrator.run_phase('test')  # to verify and advance\n\n"
+                "If using curriculum, also call:\n"
+                "  curriculum.update_metrics({'test_pass_rate': 1.0})\n"
+                "  curriculum.check_advancement()"
+            ),
+        }
+
+    def _run_optimize(self) -> dict:
+        """
+        Execute optimize phase — improve metrics through curriculum stages.
+
+        Runs the experiment loop until all curriculum stages are met
+        or the experiment budget is exhausted.
+        """
+        from engine.curriculum import CurriculumRunner
+        curriculum = CurriculumRunner()
+
+        if curriculum.is_complete():
+            return {
+                "status": "complete",
+                "message": "All curriculum stages complete",
+            }
+
+        stage = curriculum.current_stage()
+        strategy = curriculum.get_mutation_strategy()
+
+        # Calculate remaining budget
+        total_exp = self.state.get("total_experiments", 0)
+        config_path = DR_DIR / "config.json"
+        config = {}
+        if config_path.exists():
+            config = json.loads(config_path.read_text())
+        budget = config.get("experiment_budget", 200)
+        remaining = max(0, budget - total_exp)
+
+        return {
+            "status": "needs_agent",
+            "action": "optimize",
+            "curriculum_stage": stage,
+            "mutation_strategy": strategy,
+            "experiments_remaining": remaining,
+            "instruction": (
+                f"Optimize: {stage['name']} — {stage.get('description', '')}\n\n"
+                f"Target: {stage['metric']} "
+                f"{'≥' if stage.get('direction') == 'higher' else '≤'} "
+                f"{stage['target']}\n"
+                f"Preferred mutations: {strategy.get('preferred_types', [])}\n"
+                f"Temperature: {strategy.get('temperature', 0.5)}\n"
+                f"Focus areas: {strategy.get('focus_areas', [])}\n"
+                f"Experiments remaining: {remaining}\n\n"
+                "Run the DeepResearch experiment loop:\n"
+                "1. R1 DEEP READ: What is the current bottleneck?\n"
+                "2. R2 HYPOTHESIZE: What change would improve the metric?\n"
+                "3. R3 PREDICT: How much improvement do you expect?\n"
+                "4. IMPLEMENT: Apply ONE focused mutation\n"
+                "5. EVALUATE: Measure the metric\n"
+                "6. REFLECT: Was prediction correct? Update mental model.\n\n"
+                "After each experiment, call:\n"
+                "  orchestrator.record_experiment('optimize', description)\n"
+                "  curriculum.update_metrics({...})\n"
+                "  curriculum.check_advancement()\n\n"
+                "When the curriculum stage target is met, call:\n"
+                "  orchestrator.run_phase('optimize')  # check if more stages remain"
+            ),
+        }
+
+    def _run_report(self) -> dict:
+        """Execute report phase — generate the final research report."""
+        report_path = self.report_gen.save()
+        return {
+            "status": "complete",
+            "report_path": report_path,
+            "message": f"Report saved to {report_path}",
+        }
+
+    # ── Experiment Tracking ──────────────────────────────────
+
+    def record_experiment(self, phase: str, description: str,
+                          status: str = "kept"):
+        """Record that an experiment was performed during a phase."""
+        self.state["total_experiments"] = self.state.get("total_experiments", 0) + 1
+        experiments = self.state.setdefault("experiments_by_phase", {})
+        phase_exp = experiments.setdefault(phase, [])
+        phase_exp.append({
+            "description": description,
+            "status": status,
+            "experiment_number": self.state["total_experiments"],
+            "timestamp": datetime.now().isoformat(),
+        })
+        self.save_state()
+
+    def experiments_in_phase(self, phase: str) -> int:
+        """Count experiments performed in a specific phase."""
+        experiments = self.state.get("experiments_by_phase", {})
+        return len(experiments.get(phase, []))
+
+    # ── Convenience Methods ──────────────────────────────────
+
+    def reset_phase(self, phase_name: str):
+        """Reset a phase to re-run it (removes from history)."""
+        self.state["phase_history"] = [
+            h for h in self.state.get("phase_history", [])
+            if h["phase"] != phase_name
+        ]
+        # If we're past this phase, rewind
+        phase_names = [p["name"] for p in self.PHASES]
+        if phase_name in phase_names:
+            current_idx = phase_names.index(self.current_phase) if self.current_phase in phase_names else len(phase_names)
+            target_idx = phase_names.index(phase_name)
+            if target_idx < current_idx:
+                self.state["current_phase"] = phase_name
+        self.save_state()
+
+    def skip_phase(self, phase_name: str):
+        """Skip a phase (mark as completed without running)."""
+        self.state["phase_history"].append({
+            "phase": phase_name,
+            "completed_at": datetime.now().isoformat(),
+            "skipped": True,
+        })
+        if self.current_phase == phase_name:
+            self.advance_phase()
+        else:
+            self.save_state()
+
+    def generate_report(self) -> str:
+        """Generate the research report without changing phase state."""
+        return self.report_gen.generate()
+
+    def save_report(self, filename: str = "research_report.md") -> str:
+        """Generate and save report to .deepresearch/reports/."""
+        return self.report_gen.save(filename)

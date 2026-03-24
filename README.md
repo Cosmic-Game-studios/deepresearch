@@ -233,7 +233,7 @@ Level 1   ████████████████████  Paramete
 Level 1.5 ████████████████████  Informed mutations       ← COMPLETE (Reasoning Layer + Knowledge Acquisition)
 Level 2   ███████████████████░  Generative mutations     ← COMPLETE (mutations.py, safety rails, 6 types)
 Level 2.5 ███████████████████░  Curriculum learning      ← COMPLETE (curriculum.py, 6 domain templates)
-Level 3   ██████████████░░░░░░  Autonomous engineer      ← BUILT (autonomous.py, needs model validation)
+Level 3   ███████████████████░  Autonomous engineer      ← COMPLETE (autonomous.py, full pipeline + report gen)
 ```
 
 ### What each level means
@@ -246,7 +246,7 @@ Level 3   ██████████████░░░░░░  Autonomo
 
 **Level 2.5 — Curriculum learning** (complete): Instead of one flat metric, a sequence of progressively harder goals. `engine/curriculum.py` with 6 domain templates (web_api, ml_training, game, library, optimization, custom), stage-specific mutation strategies, regression detection, and automatic advancement. Each stage can focus on different mutation types.
 
-**Level 3 — Autonomous engineer** (built, needs model validation): Given only a specification, the agent researches the domain (`DomainResearcher`), designs the architecture (`Architect` with topological sort), creates the project structure (`Bootstrapper`), and builds components in dependency order using the DeepResearch experiment loop. The `Orchestrator` manages the 7-phase pipeline: research → architect → bootstrap → build → test → optimize → report.
+**Level 3 — Autonomous engineer** (complete): Given only a specification, the agent researches the domain (`DomainResearcher`), designs the architecture (`Architect` with topological sort), creates the project structure (`Bootstrapper`), and builds components in dependency order using the DeepResearch experiment loop. The `Orchestrator` manages the 7-phase pipeline: research → architect → bootstrap → build → test → optimize → report. Full `run()` method drives all phases automatically with phase validation, prerequisite checking, experiment tracking per phase, and `ReportGenerator` produces comprehensive markdown reports from all collected data. CLI commands: `run`, `run-phase`, `validate`, `report`, `reset`, `skip`.
 
 ### What we're building vs what we're waiting for
 
@@ -260,7 +260,7 @@ Level 3   ██████████████░░░░░░  Autonomo
 | 7-phase Level 3 pipeline (research → build → optimize) | Model that can run the full pipeline autonomously |
 | 3 benchmarks proving each level's value | Real-world validation on production codebases |
 
-The scaffolding is built. Every level from 1 to 3 has working code, not just plans. What's missing is a model that can reliably run the Level 3 pipeline end-to-end without human intervention — and real-world validation that proves it works on production problems, not just synthetic benchmarks.
+Every level from 1 to 3 is now fully implemented with working code, not just plans. Level 3 has a complete `run()` pipeline, phase validation, experiment tracking, and automated report generation. What's missing is real-world validation — a model that can reliably run the Level 3 pipeline end-to-end without human intervention on production problems, not just synthetic benchmarks.
 
 ### Honest limits
 
